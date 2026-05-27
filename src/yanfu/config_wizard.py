@@ -1,13 +1,14 @@
 """YanFu - Interactive configuration wizard.
 
 Guides users through setting up Ollama or OpenAI-compatible API.
+Models are dynamically fetched from the API.
 """
 
 from __future__ import annotations
 
 import sys
 
-from .translator import ConfigManager, MODEL_PRESETS, OllamaTranslator
+from .translator import ConfigManager, ModelFetcher, OllamaTranslator
 
 
 def run_config_wizard():
@@ -50,27 +51,36 @@ def run_config_wizard():
             base_url = "http://localhost:11434"
         config.set("base_url", base_url)
 
+        # Fetch available models
         print()
-        print("Step 3: Choose a model")
-        print("  Available presets:")
-        for i, (key, info) in enumerate(MODEL_PRESETS.items(), 1):
-            if info["provider"] == "ollama":
-                print(f"  {i}. {key} - {info['description']}")
-        print("  Or enter a custom model name (e.g., llama3.2:1b)")
-        print()
+        print("Fetching available models...")
+        models = ModelFetcher.get_ollama_models(base_url)
+        if models:
+            print(f"  Found {len(models)} model(s):")
+            for i, m in enumerate(models, 1):
+                print(f"  {i}. {m}")
+            print()
+            print("  Or enter a custom model name (e.g., pull a new one with 'ollama pull <model>')")
+            print()
 
-        while True:
-            choice = input("Select model [1-4 or custom name]: ").strip()
-            if choice.isdigit():
-                idx = int(choice) - 1
-                ollama_presets = [(k, v) for k, v in MODEL_PRESETS.items() if v["provider"] == "ollama"]
-                if 0 <= idx < len(ollama_presets):
-                    model = ollama_presets[idx][1]["model"]
+            while True:
+                choice = input(f"Select model [1-{len(models)} or custom name]: ").strip()
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(models):
+                        model = models[idx]
+                        break
+                elif choice:
+                    model = choice
                     break
-            elif choice:
-                model = choice
-                break
-            print("Invalid choice.")
+                print("Invalid choice.")
+        else:
+            print("  No models found. Please pull a model first (e.g., 'ollama pull gemma3:1b')")
+            print()
+            model = input("  Enter model name to use: ").strip()
+            if not model:
+                print("Model name is required.")
+                sys.exit(1)
 
         config.set("model", model)
 
@@ -84,26 +94,42 @@ def run_config_wizard():
         config.set("api_key", api_key)
         config.set("base_url", "https://api.openai.com")
 
+        # Fetch available models
         print()
-        print("Step 3: Choose a model")
-        print("  1. gpt-4o-mini (Fast and affordable)")
-        print("  2. gpt-4o (High quality)")
-        print("  Or enter a custom model name")
-        print()
+        print("Fetching available models...")
+        models = ModelFetcher.get_openai_models("https://api.openai.com", api_key)
+        if models:
+            # Filter to common chat models
+            chat_models = [m for m in models if "gpt" in m.lower() or "o1" in m.lower() or "o3" in m.lower()]
+            if chat_models:
+                print(f"  Found {len(chat_models)} chat model(s):")
+                for i, m in enumerate(chat_models[:20], 1):  # Show first 20
+                    print(f"  {i}. {m}")
+                print()
+                print("  Or enter a custom model name")
+                print()
 
-        while True:
-            choice = input("Select model [1-2 or custom name]: ").strip()
-            if choice == "1":
-                model = "gpt-4o-mini"
-                break
-            elif choice == "2":
-                model = "gpt-4o"
-                break
-            elif choice:
-                model = choice
-                break
-            print("Invalid choice.")
+                while True:
+                    choice = input(f"Select model [1-{min(20, len(chat_models))} or custom name]: ").strip()
+                    if choice.isdigit():
+                        idx = int(choice) - 1
+                        if 0 <= idx < len(chat_models):
+                            model = chat_models[idx]
+                            break
+                    elif choice:
+                        model = choice
+                        break
+                    print("Invalid choice.")
+            else:
+                print("  No chat models found.")
+                model = input("  Enter model name to use: ").strip()
+        else:
+            print("  Could not fetch models. Please enter manually.")
+            model = input("  Model name (e.g., gpt-4o-mini): ").strip()
 
+        if not model:
+            print("Model name is required.")
+            sys.exit(1)
         config.set("model", model)
 
     else:  # custom
@@ -118,10 +144,35 @@ def run_config_wizard():
         api_key = input("  API Key (leave empty if not required): ").strip()
         config.set("api_key", api_key)
 
+        # Try to fetch models
         print()
-        model = input("  Model name: ").strip()
+        print("Fetching available models...")
+        models = ModelFetcher.get_openai_models(base_url, api_key)
+        if models:
+            print(f"  Found {len(models)} model(s):")
+            for i, m in enumerate(models[:20], 1):
+                print(f"  {i}. {m}")
+            print()
+            print("  Or enter a custom model name")
+            print()
+
+            while True:
+                choice = input(f"Select model [1-{min(20, len(models))} or custom name]: ").strip()
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(models):
+                        model = models[idx]
+                        break
+                elif choice:
+                    model = choice
+                    break
+                print("Invalid choice.")
+        else:
+            print("  Could not fetch models. Please enter manually.")
+            model = input("  Model name: ").strip()
+
         if not model:
-            print("Error: Model name is required.")
+            print("Model name is required.")
             sys.exit(1)
         config.set("model", model)
 

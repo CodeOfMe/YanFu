@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .api import ToolResult, yanfu_translate_file, yanfu_translate_files
-from .translator import ConfigManager, MODEL_PRESETS
+from .translator import ConfigManager, ModelFetcher
 from .utils import LANGUAGE_MAP, find_documents
 
 
@@ -31,19 +31,7 @@ Examples:
   yanfu ./papers --batch -l es               # Batch translate directory
   yanfu paper.pdf -o ./output -l de -v       # Verbose output
   yanfu paper.pdf --json                     # JSON output
-
-Translation Models (configure with --config):
-  Ollama (Local):
-    gemma3:1b        Google Gemma 3 1B
-    qwen2.5:1.5b     Qwen 2.5 1.5B (excellent for Chinese)
-    qwen2.5:7b       Qwen 2.5 7B (better quality)
-    llama3.2:3b      Llama 3.2 3B
-
-  OpenAI (Cloud, requires API key):
-    gpt-4o-mini      Fast and affordable
-    gpt-4o           High quality
-
-  Custom: Any OpenAI-compatible endpoint (vLLM, LM Studio, etc.)
+  yanfu --list-models                        # List available models from configured provider
 
 Configuration:
   Run 'yanfu --config' to set up your translation provider.
@@ -210,13 +198,25 @@ Configuration:
         sys.exit(0)
 
     if args.list_models:
-        print("Available translation model presets:")
-        print()
-        for model_id, info in MODEL_PRESETS.items():
-            print(f"  {model_id:25s}  {info['name']}")
-            print(f"                           {info['description']}")
-        print()
-        print("Configure with: yanfu --config")
+        config = ConfigManager()
+        if not config.is_configured():
+            print("Not configured. Run 'yanfu --config' first.")
+            sys.exit(1)
+
+        provider = config.get("provider", "ollama")
+        base_url = config.get("base_url", "http://localhost:11434")
+        api_key = config.get("api_key", "")
+
+        print(f"Fetching models from {provider} ({base_url})...")
+        models = ModelFetcher.get_models(provider, base_url, api_key)
+
+        if models:
+            print(f"\nAvailable models ({len(models)}):")
+            for m in models:
+                print(f"  {m}")
+        else:
+            print("\nNo models found. Check your connection and configuration.")
+            sys.exit(1)
         sys.exit(0)
 
     if args.gui:

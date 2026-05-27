@@ -16,59 +16,19 @@ import requests
 
 from .utils import LANGUAGE_MAP, TRANSLATION_PROMPT_TEMPLATE
 
-# Predefined model presets for easy selection
-MODEL_PRESETS = {
-    "ollama/gemma3:1b": {
-        "name": "Google Gemma 3 1B (Local)",
-        "provider": "ollama",
-        "model": "gemma3:1b",
-        "description": "Fast local model, good for quick translations",
-    },
-    "ollama/qwen2.5:1.5b": {
-        "name": "Qwen 2.5 1.5B (Local)",
-        "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "description": "Excellent Chinese support, lightweight",
-    },
-    "ollama/qwen2.5:7b": {
-        "name": "Qwen 2.5 7B (Local)",
-        "provider": "ollama",
-        "model": "qwen2.5:7b",
-        "description": "Better quality, needs more RAM",
-    },
-    "ollama/llama3.2:3b": {
-        "name": "Llama 3.2 3B (Local)",
-        "provider": "ollama",
-        "model": "llama3.2:3b",
-        "description": "Good general purpose model",
-    },
-    "openai/gpt-4o-mini": {
-        "name": "GPT-4o Mini (Cloud)",
-        "provider": "openai",
-        "model": "gpt-4o-mini",
-        "description": "Fast and affordable OpenAI model",
-    },
-    "openai/gpt-4o": {
-        "name": "GPT-4o (Cloud)",
-        "provider": "openai",
-        "model": "gpt-4o",
-        "description": "High-quality OpenAI model",
-    },
-}
+# Configuration file location
+CONFIG_DIR = Path.home() / ".config" / "yanfu"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # Default configuration
 DEFAULT_CONFIG = {
     "provider": "ollama",
     "base_url": "http://localhost:11434",
-    "model": "gemma3:1b",
+    "model": "",
     "api_key": "",
     "temperature": 0.3,
     "max_tokens": 4096,
 }
-
-# Configuration file location
-CONFIG_DIR = Path.home() / ".config" / "yanfu"
-CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 class ConfigManager:
@@ -108,13 +68,76 @@ class ConfigManager:
 
     def is_configured(self) -> bool:
         """Check if basic configuration exists."""
-        return bool(self.config.get("provider") and self.config.get("model"))
+        return bool(self.config.get("provider") and self.config.get("base_url") and self.config.get("model"))
 
     def reset(self):
         """Reset to default configuration."""
         self.config = DEFAULT_CONFIG.copy()
         if self.config_file.exists():
             self.config_file.unlink()
+
+
+class ModelFetcher:
+    """Dynamically fetch available models from API."""
+
+    @staticmethod
+    def get_ollama_models(base_url: str = "http://localhost:11434") -> list[str]:
+        """Get list of locally available Ollama models.
+
+        Args:
+            base_url: Ollama server URL.
+
+        Returns:
+            List of model names.
+        """
+        try:
+            url = f"{base_url.rstrip('/')}/api/tags"
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            return [m["name"] for m in models]
+        except Exception:
+            return []
+
+    @staticmethod
+    def get_openai_models(base_url: str = "https://api.openai.com", api_key: str = "") -> list[str]:
+        """Get list of available OpenAI models.
+
+        Args:
+            base_url: API base URL.
+            api_key: API key.
+
+        Returns:
+            List of model IDs.
+        """
+        try:
+            url = f"{base_url.rstrip('/')}/v1/models"
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            models = response.json().get("data", [])
+            return [m["id"] for m in models]
+        except Exception:
+            return []
+
+    @staticmethod
+    def get_models(provider: str, base_url: str, api_key: str = "") -> list[str]:
+        """Get available models based on provider.
+
+        Args:
+            provider: API provider (ollama, openai, custom).
+            base_url: API base URL.
+            api_key: API key.
+
+        Returns:
+            List of model names.
+        """
+        if provider == "ollama":
+            return ModelFetcher.get_ollama_models(base_url)
+        else:
+            return ModelFetcher.get_openai_models(base_url, api_key)
 
 
 class OllamaTranslator:
@@ -124,7 +147,7 @@ class OllamaTranslator:
         self,
         provider: str = "ollama",
         base_url: str = "http://localhost:11434",
-        model: str = "gemma3:1b",
+        model: str = "",
         api_key: str = "",
         temperature: float = 0.3,
         max_tokens: int = 4096,
@@ -271,11 +294,17 @@ class OllamaTranslator:
                 models = response.json().get("models", [])
                 model_names = [m["name"] for m in models]
 
-                if self.model in model_names:
+                if not model_names:
+                    return False, "Connected, but no models found. Run 'ollama pull <model>' first."
+
+                if self.model and self.model in model_names:
                     return True, f"Connected. Model '{self.model}' is available."
-                else:
+                elif self.model:
                     available = ", ".join(model_names[:5])
                     return False, f"Model '{self.model}' not found. Available: {available}"
+                else:
+                    available = ", ".join(model_names[:5])
+                    return True, f"Connected. Available models: {available}"
             else:
                 url = f"{self.base_url}/v1/models"
                 headers = {}
@@ -283,6 +312,9 @@ class OllamaTranslator:
                     headers["Authorization"] = f"Bearer {self.api_key}"
                 response = requests.get(url, headers=headers, timeout=5)
                 response.raise_for_status()
+                models = response.json().get("data", [])
+                if models:
+                    return True, f"Connected. {len(models)} models available."
                 return True, f"Connected to {self.base_url}"
         except requests.exceptions.ConnectionError:
             return False, f"Cannot connect to {self.base_url}"
@@ -294,11 +326,7 @@ def translate_markdown(
     markdown: str,
     source_lang: str = "auto",
     target_lang: str = "en",
-    model_name: str = "gemma3:1b",
-    model_path: str | None = None,
-    device: str = "auto",
     temperature: float = 0.3,
-    cache_dir: str | None = None,
     config: ConfigManager | None = None,
 ) -> str:
     """Translate Markdown text while preserving formatting.
@@ -307,11 +335,7 @@ def translate_markdown(
         markdown: Markdown text to translate.
         source_lang: Source language code.
         target_lang: Target language code.
-        model_name: Model identifier (legacy, ignored if config provided).
-        model_path: Ignored (legacy).
-        device: Ignored (legacy).
         temperature: Generation temperature.
-        cache_dir: Ignored (legacy).
         config: Configuration manager.
 
     Returns:
@@ -323,7 +347,7 @@ def translate_markdown(
     translator = OllamaTranslator(
         provider=config.get("provider", "ollama"),
         base_url=config.get("base_url", "http://localhost:11434"),
-        model=config.get("model", model_name),
+        model=config.get("model", ""),
         api_key=config.get("api_key", ""),
         temperature=config.get("temperature", temperature),
         max_tokens=config.get("max_tokens", 4096),

@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .core import DocumentProcessor
-from .translator import ConfigManager, MODEL_PRESETS, OllamaTranslator
+from .translator import ConfigManager, ModelFetcher, OllamaTranslator
 from .utils import LANGUAGE_MAP, find_documents
 
 # ---------------------------------------------------------------------------
@@ -224,6 +224,10 @@ class SettingsDialog(QDialog):
         self.model_combo = QComboBox()
         provider_layout.addRow("Model:", self.model_combo)
 
+        self.refresh_models_btn = QPushButton("Refresh Models")
+        self.refresh_models_btn.clicked.connect(self._refresh_models)
+        provider_layout.addRow("", self.refresh_models_btn)
+
         self.test_btn = QPushButton("Test Connection")
         self.test_btn.clicked.connect(self._test_connection)
         provider_layout.addRow("", self.test_btn)
@@ -303,24 +307,48 @@ class SettingsDialog(QDialog):
             self.base_url_edit.setEnabled(True)
             self.api_key_edit.setEnabled(False)
             self.model_combo.clear()
-            for key, info in MODEL_PRESETS.items():
-                if info["provider"] == "ollama":
-                    self.model_combo.addItem(f"{key} - {info['description']}", key)
+            self.model_combo.addItem("Loading models...", "")
+            self.model_combo.setEnabled(False)
+            self._refresh_models()
         elif provider == "openai":
             self.base_url_edit.setEnabled(False)
             self.base_url_edit.setText("https://api.openai.com")
             self.api_key_edit.setEnabled(True)
             self.model_combo.clear()
-            for key, info in MODEL_PRESETS.items():
-                if info["provider"] == "openai":
-                    self.model_combo.addItem(f"{key} - {info['description']}", key)
+            self.model_combo.addItem("Loading models...", "")
+            self.model_combo.setEnabled(False)
+            self._refresh_models()
         else:
             self.base_url_edit.setEnabled(True)
             self.base_url_edit.clear()
             self.api_key_edit.setEnabled(True)
             self.model_combo.clear()
             self.model_combo.setEditable(True)
-            self.model_combo.setEditText("custom-model")
+            self.model_combo.setEditText("")
+            self.model_combo.setEnabled(True)
+
+    def _refresh_models(self):
+        """Fetch and populate available models."""
+        provider = self.provider_combo.currentData()
+        base_url = self.base_url_edit.text()
+        api_key = self.api_key_edit.text()
+
+        self.model_combo.clear()
+        self.model_combo.addItem("Fetching models...", "")
+        self.model_combo.setEnabled(False)
+        QApplication.processEvents()
+
+        models = ModelFetcher.get_models(provider, base_url, api_key)
+
+        self.model_combo.clear()
+        if models:
+            for m in models:
+                self.model_combo.addItem(m, m)
+            self.model_combo.setEnabled(True)
+        else:
+            self.model_combo.addItem("No models found (enter manually)", "")
+            self.model_combo.setEditable(True)
+            self.model_combo.setEnabled(True)
 
     def _load_settings(self):
         provider = self.config.get("provider", "ollama")

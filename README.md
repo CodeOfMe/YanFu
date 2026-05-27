@@ -1,123 +1,202 @@
-# YanFu
+# YanFu (言附)
 
-PDF/CAJ document translator with layout-preserving PDF generation using Ollama or OpenAI-compatible APIs.
+**PDF/CAJ document translator with layout-preserving PDF generation using Ollama or OpenAI-compatible APIs.**
 
-**Simple setup**: Install once, configure your translation provider, and translate. Supports local Ollama, OpenAI, and any OpenAI-compatible endpoint.
+![](https://img.shields.io/badge/python-3.10+-blue) ![](https://img.shields.io/badge/license-GPL--3.0-green)
+
+---
 
 ## Features
 
-- **Flexible Translation Providers**: Use local Ollama, OpenAI cloud, or any OpenAI-compatible API (vLLM, LM Studio, etc.)
-- **Dynamic Model Discovery**: Automatically fetches available models from your configured provider — no hardcoded model lists
-- **Multi-format Support**: Parse PDF and CAJ (Chinese Academic Journal) files
-- **Layout Preservation**: Generate PDF output with preserved layout, images, and formulas using marker-pdf
-- **OCR Support**: Handle scanned documents with built-in OCR
-- **Batch Processing**: Process multiple files or entire directories
-- **GUI & CLI**: Beautiful PySide6 graphical interface and command-line interface
-- **Python API**: Clean API with ToolResult pattern for programmatic usage
-- **Configuration Wizard**: Interactive setup guide for first-time users
+- **14 PDF parsers**: marker, docling (default), mineru, easyocr, doctr, nougat, pymupdf, pdfplumber, llamaparse, mathpix, mineru-cloud, doc2x, and auto mode
+- **Flexible translation**: local Ollama, OpenAI, or any OpenAI-compatible endpoint
+- **Dynamic model discovery**: auto-fetches available models from your provider
+- **Three-panel GUI**: original PDF | parsed markdown | translated output — all resizable
+- **Rendered + plain view**: toggle between formatted HTML (tables, headings, code) and raw markdown
+- **Synchronized scrolling**: PDF and translation scroll together (toggleable)
+- **Background threads**: parsing and translation never block the UI
+- **CLI + Python API**: `yanfu paper.pdf -l zh` or `from yanfu import yanfu_translate_file`
+- **Config wizard**: `yanfu --config` guides first-time setup
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- macOS / Linux / Windows
-- Ollama (for local translation) or OpenAI API key (for cloud translation)
-- CPU-friendly: All document parsing runs efficiently on CPU
+- Windows / macOS / Linux
+- **Ollama** (free, local) or **OpenAI API key** (cloud)
+- Disk: ~3GB for marker models, ~1.5GB for docling, or 0 for pymupdf/pdfplumber
+
+---
 
 ## Installation
 
 ```bash
-# Install with all dependencies (recommended)
 pip install yanfu
-
-# Development extras
-pip install yanfu[dev]
 ```
 
-That's it! All core dependencies including PySide6 GUI, marker-pdf OCR, and document parsers are included.
+All 14 engines and GUI dependencies are included. No extra `[gui]` or `[all]` needed.
+
+```bash
+# Verify installation
+yanfu --version
+```
+
+---
 
 ## Quick Start
 
-### Step 1: Configure Your Translation Provider
-
-Run the interactive configuration wizard:
+### 1. Configure your provider
 
 ```bash
 yanfu --config
 ```
 
-Or configure via the GUI Settings dialog. Supported providers:
+Choose provider → select model → pick engine. Defaults: **Ollama + gemma3:1b + docling**.
 
-| Provider | Setup | Cost |
-|----------|-------|------|
-| **Ollama** (Local) | `ollama pull qwen3:0.6b` | Free |
-| **OpenAI** (Cloud) | API key required | Pay-per-use |
-| **Custom** | Any OpenAI-compatible endpoint | Varies |
+Or pull models manually:
 
-### Step 2: Translate
+```bash
+ollama pull gemma3:1b        # Default model
+ollama pull qwen2.5:1.5b     # Better for Chinese
+ollama pull qwen2.5:7b       # Best quality
+```
 
-#### GUI Application
+### 2. Launch the GUI
 
 ```bash
 yanfu --gui
 ```
 
-The GUI features:
-- **Side-by-side view**: Original PDF on the left, translation on the right
-- **Synchronized scrolling**: Toggle sync to navigate both panels together
-- **Separate threads**: PDF parsing and translation run in background threads — UI stays responsive
-- **Save options**: Export as Markdown or translated PDF
+### 3. Translate
 
-#### CLI
+| Step | Button | What happens |
+|------|--------|-------------|
+| Open PDF | 📂 Open PDF | Load PDF into left panel |
+| Parse | 📄 Parse PDF | Extract text (middle panel shows markdown) |
+| Translate | ▶ Translate | Translate parsed text (right panel shows result) |
+| Save | 💾 Save MD / 💾 Save PDF | Export translation |
+
+**Or one-click**: open PDF → click ▶ Translate (auto-parses, then translates).
+
+### 4. CLI
 
 ```bash
-# Translate a PDF to Chinese
+# Translate to Chinese
 yanfu paper.pdf -l zh
 
 # Translate to Japanese
 yanfu paper.pdf -l ja
 
-# Translate multiple files
-yanfu paper1.pdf paper2.pdf -l fr
+# Use specific engine
+yanfu paper.pdf --engine marker -l zh
 
-# Batch process a directory
-yanfu ./papers --batch -l es
-
-# Verbose output with detailed logs
-yanfu paper.pdf -v
+# Batch directory
+yanfu ./papers --batch -l es -v
 
 # JSON output
 yanfu paper.pdf --json
-
-# List available models from your configured provider
-yanfu --list-models
-
-# Test connection to your provider
-yanfu --test-connection
 ```
 
-## CLI Flags
+---
 
-| Flag | Description |
-|------|-------------|
-| `--gui` | Launch graphical interface |
-| `--config` | Run configuration wizard |
-| `--test-connection` | Test provider connection |
-| `--list-models` | List available models from provider |
-| `--reset-config` | Reset configuration to defaults |
-| `-V`, `--version` | Show version |
-| `-v`, `--verbose` | Enable verbose output |
-| `-o`, `--output` | Output directory |
-| `--json` | JSON output format |
-| `-q`, `--quiet` | Suppress non-essential output |
-| `-l`, `--lang` | Target language (default: en) |
-| `--source-lang` | Source language (default: auto) |
-| `--use-ocr` | Enable OCR for scanned docs |
-| `--engine` | PDF parser (auto/pymupdf/marker/pdfplumber) |
-| `--temperature` | Translation temperature (0.0-1.0) |
-| `--batch` | Batch process directory |
-| `--list-langs` | List supported languages |
+## GUI Walkthrough
 
-## Supported Languages
+```
+┌────────────────┬─────────────────────┬─────────────────────┐
+│  📄 Original   │  📝 Parsed Markdown │  🌐 Translation     │
+│  ┌──────────┐  │  🔄Plain ✕Clear    │  🔗Sync 🔄Plain ✕   │
+│  │          │  │  📄Parse ▶Translate │  ▶Translate 💾Save  │
+│  │   PDF    │  │  ┌──────────────┐   │  ┌──────────────┐   │
+│  │  Viewer  │  │  │ Rendered or  │   │  │ Rendered or  │   │
+│  │          │  │  │ Plain text   │   │  │ Plain text   │   │
+│  │          │  │  │              │   │  │              │   │
+│  └──────────┘  │  └──────────────┘   │  └──────────────┘   │
+│  ◀ page 1/11▶ │  Tables in tables   │  ### 方法          │
+│                │  |col1|col2|        │  |列1|列2|          │
+│                │  [Formula]          │  [公式]             │
+└────────────────┴─────────────────────┴─────────────────────┘
+│  Status: Parsing PDF...   Progress: [████████░░] 80%      │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Panels
+
+| Panel | Content | Actions |
+|-------|---------|--------|
+| Left | PDF viewer with page navigation | Open, prev/next page |
+| Middle | Parsed markdown (rendered or plain) | Parse, Clear, toggle view |
+| Right | Translated markdown (rendered or plain) | Translate, Clear, Save, toggle view |
+
+### Toolbar
+
+- 📂 Open PDF
+- ▶ Translate
+- 💾 Save (Markdown or PDF)
+- 🔗 Sync Scroll (toggle)
+
+### Settings
+
+**File → Settings** (Ctrl+,):
+
+| Section | Options |
+|---------|---------|
+| Translation Provider | Provider (Ollama/OpenAI/Custom), Base URL, API Key, Model |
+| Model list | Refresh Models, Test Connection |
+| PDF Parsing Engine | 14 engines with availability status (green ✓ / red ✗) |
+| Device | Auto / CPU / CUDA / Apple MPS / DirectML(Vulkan) |
+| Download / Re-download | Download models for selected engine (Force clears cache) |
+| Translation Settings | Source/Target language, Temperature |
+| Output Settings | Page size, Font size, Margin |
+
+---
+
+## PDF Parsing Engines (14 total)
+
+| Engine | Type | Models | OCR | Best For |
+|--------|------|--------|:---:|----------|
+| **docling** (default) | Local | ~1.5GB | ✓ | Balanced quality/speed, good tables |
+| **marker** | Local | ~3GB | ✓ | Best overall: layout + OCR + images + formulas |
+| **mineru** | Local | ~1.5GB | ✓ | Chinese documents |
+| **easyocr** | Local | ~300MB | ✓ | 80+ languages, lightweight |
+| **doctr** | Local | ~500MB | ✓ | Rotated text, lightweight |
+| **nougat** | Local | ~1.5GB | ✓ | Academic papers |
+| **pymupdf** | Local | None | ✗ | Fastest, digital PDFs |
+| **pdfplumber** | Local | None | ✗ | Table extraction |
+| **llamaparse** | Cloud | Cloud | ✓ | Excellent quality (LlamaCloud key) |
+| **mathpix** | Cloud | Cloud | ✓ | Math/STEM formulas |
+| **mineru-cloud** | Cloud | Cloud | ✓ | Chinese docs (API key) |
+| **doc2x** | Cloud | Cloud | ✓ | Best formula LaTeX output |
+| **auto** | N/A | N/A | - | Auto-selects best available |
+
+**Formula tip**: For PDFs with heavy math, use **Marker** or **Doc2X**.
+
+---
+
+## CLI Reference
+
+```
+yanfu [OPTIONS] [input ...]
+
+Options:
+  --gui              Launch graphical interface
+  --config           Run configuration wizard
+  --test-connection  Test provider connection
+  --list-models      List models from provider
+  --reset-config     Reset to defaults
+  -V, --version      Show version
+  -v, --verbose      Detailed output
+  -o, --output DIR   Output directory
+  --json             JSON output
+  -l, --lang CODE    Target language (default: en)
+  --source-lang CODE Source language (default: auto)
+  --engine ENGINE    PDF parser (docling/marker/pymupdf/...)
+  --temperature FLOAT Translation temperature (0.0-1.0)
+  --batch            Batch process directory
+  --list-langs       List supported languages
+```
+
+### Languages
 
 | Code | Language | Code | Language |
 |------|----------|------|----------|
@@ -125,111 +204,101 @@ yanfu --test-connection
 | zh-Hant | Chinese (Traditional) | ja | Japanese |
 | ko | Korean | fr | French |
 | de | German | es | Spanish |
-| ru | Russian | it | Italian |
-| pt | Portuguese | ar | Arabic |
+| ru | Russian | ar | Arabic |
 | hi | Hindi | th | Thai |
-| vi | Vietnamese | | |
+| vi | Vietnamese | it | Italian |
+| pt | Portuguese | | |
+
+---
 
 ## Python API
 
 ```python
 from yanfu import yanfu_translate_file, ToolResult
+from yanfu.translator import ConfigManager
 
-# Translate a single file
-result = yanfu_translate_file(
-    input_path="paper.pdf",
-    target_lang="zh",
-)
+# Configure
+config = ConfigManager()
+config.set("provider", "ollama")
+config.set("model", "gemma3:1b")
+config.save_config()
 
-print(result.success)    # True / False
-print(result.data)       # Output paths and metadata
-print(result.metadata)   # Version and timing info
+# Translate
+result = yanfu_translate_file("paper.pdf", target_lang="zh", config=config)
+print(result.data["output_pdf"])  # Path to translated PDF
 ```
 
-### Batch Processing
+### Batch
 
 ```python
 from yanfu import yanfu_translate_files
 
 result = yanfu_translate_files(
-    input_paths=["paper1.pdf", "paper2.caj"],
+    ["paper1.pdf", "paper2.pdf"],
     target_lang="ja",
-    use_ocr=True,
+    config=config,
 )
-
 for r in result.data["results"]:
-    print(f"{r['file']}: {'OK' if r['success'] else 'Failed'}")
+    print(r["file"], "✓" if r["success"] else "✗")
 ```
 
-### Configuration Management
+---
 
-```python
-from yanfu.translator import ConfigManager
+## Model Download
 
-config = ConfigManager()
+### Auto-download
 
-# Check if configured
-if not config.is_configured():
-    print("Run 'yanfu --config' to set up")
+Engines auto-download models on first use (terminal shows tqdm progress bars). You can pre-download in Settings:
 
-# Modify settings
-config.set("provider", "ollama")
-config.set("model", "qwen3:0.6b")
-config.set("base_url", "http://localhost:11434")
-config.save_config()
+1. Settings → select engine → click **⬇ Download Selected Engine Models**
+2. Terminal shows download progress and cache location
+3. Click **🔄 Re-download (Force)** to clear cache and re-download
 
-# Reset to defaults
-config.reset()
-```
+### Cache locations
 
-## Architecture
+| Engine | Cache Path |
+|--------|-----------|
+| marker | `~/.cache/datalab/models/` (Linux/Mac) or `%LOCALAPPDATA%\datalab\models\` (Windows) |
+| docling / doctr | `~/.cache/huggingface/hub/` |
+| easyocr | `<easyocr_package>/model/` |
+| pymupdf / pdfplumber | No cache needed |
 
-YanFu uses a clean multi-threaded architecture:
+---
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    GUI (Main Thread)                  │
-│  ┌──────────────┐    ┌──────────────────────────┐   │
-│  │  PDF Viewer   │    │    Translation Editor     │   │
-│  │  (PyMuPDF)    │    │    (QTextEdit)            │   │
-│  └──────────────┘    └──────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-┌─────────────────┐          ┌──────────────────────┐
-│  ParseWorker     │          │  TranslateWorker      │
-│  (Background)    │          │  (Background)         │
-│  - PDF parsing   │          │  - API calls          │
-│  - Image extract │          │  - Chunk translation  │
-│  - Markdown gen  │          │  - PDF rendering      │
-└─────────────────┘          └──────────────────────┘
-```
+## China Mirror / ModelScope
 
-- **ParseWorker**: Extracts text, images, and formulas from PDF using marker-pdf or PyMuPDF
-- **TranslateWorker**: Sends text chunks to Ollama/OpenAI API, assembles results, renders PDF
-- **UI Thread**: Remains responsive — no blocking during parsing or translation
+YanFu defaults to `HF_ENDPOINT=https://hf-mirror.com` for HuggingFace downloads. Marker/surya models download from `https://models.datalab.to` (accessible from China).
+
+For engines that need HuggingFace models (docling, doctr), the mirror is used automatically.
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `ModuleNotFoundError: PySide6` | `pip install yanfu` (includes all deps) |
+| Translation empty | Check Ollama: `ollama list` → model installed? Try larger model |
+| "No extractable text" | PDF is image-based: use EasyOCR or Marker engine |
+| Docling formulas missing | Use Marker engine for formulas, or Doc2X cloud |
+| QThread crash | Update to latest version (`git pull`) |
+| Download hangs | Use Settings → Re-download (Force) to clear cache |
+| Model path unknown | Terminal prints cache path during download |
+
+---
 
 ## Development
 
 ```bash
-# Clone and install for development
 git clone https://github.com/CodeOfMe/YanFu.git
 cd YanFu
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v
-
-# Lint and format
 ruff check .
-ruff format .
 ```
+
+---
 
 ## License
 
 GPL-3.0-or-later
-
-## See Also
-
-- [NuoYi](https://github.com/cycleuser/NuoYi) - PDF/DOCX to Markdown converter
-- [TransPaste](https://github.com/CodeOfMe/TransPaste) - Local LLM clipboard translator

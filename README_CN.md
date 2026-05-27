@@ -1,158 +1,187 @@
-# YanFu (言富)
+# YanFu (言附)
 
-使用 Ollama 或 OpenAI 兼容 API 的 PDF/CAJ 文档翻译工具，支持保留排版的 PDF 生成。
+**使用 Ollama 或 OpenAI 兼容 API 的 PDF/CAJ 文档翻译工具，保留排版生成 PDF。**
 
-**简单配置**：安装一次，配置翻译提供商即可使用。支持本地 Ollama、OpenAI 云端以及任何 OpenAI 兼容接口。
+---
 
-## 功能特性
+## 功能
 
-- **灵活的翻译提供商**：使用本地 Ollama、OpenAI 云端，或任何 OpenAI 兼容 API（vLLM、LM Studio 等）
-- **动态模型发现**：自动从配置的提供商获取可用模型——无硬编码模型列表
-- **多格式支持**：解析 PDF 和 CAJ（中国学术期刊）文件
-- **排版保留**：使用 marker-pdf 生成保留排版、图片和公式的 PDF 输出
-- **OCR 支持**：处理扫描文档
-- **批量处理**：处理多个文件或整个目录
-- **图形界面与命令行**：精美的 PySide6 图形界面和命令行界面
-- **Python API**：干净的 API 接口，支持 ToolResult 模式
-- **配置向导**：首次用户的交互式设置引导
+- **14 种 PDF 解析引擎**：docling（默认）、marker、mineru、easyocr、doctr、nougat、pymupdf、pdfplumber、llamaparse、mathpix、mineru-cloud、doc2x，以及自动选择模式
+- **灵活的翻译后端**：本地 Ollama、OpenAI 云端，或任何 OpenAI 兼容接口
+- **动态模型发现**：自动从配置的提供商获取可用模型
+- **三栏 GUI**：原文 PDF | 解析后 Markdown | 翻译结果，均可拖拽调整大小
+- **渲染/纯文本切换**：Markdown 可切换为渲染视图（表格、标题、代码格式化）或纯文本
+- **同步滚动**：PDF 与翻译同步滚动（可开关）
+- **后台线程**：解析和翻译不阻塞界面
+- **CLI + Python API**：`yanfu paper.pdf -l zh` 或 `from yanfu import yanfu_translate_file`
+- **配置向导**：`yanfu --config` 引导完成首次设置
 
-## 系统要求
-
-- Python 3.10+
-- macOS / Linux / Windows
-- Ollama（本地翻译）或 OpenAI API 密钥（云端翻译）
-- CPU 友好：所有文档解析均可在 CPU 上高效运行
+---
 
 ## 安装
 
-YanFu 默认使用 **ModelScope / 国内 HF 镜像** 下载模型，无需科学上网。
-
 ```bash
-# 安装所有依赖（推荐）
 pip install yanfu
-
-# 开发工具
-pip install yanfu[dev]
 ```
 
-就这么简单！所有核心依赖（包括 PySide6 GUI、marker-pdf OCR 和文档解析器）都已包含。
+14 种引擎和 GUI 依赖全部包含，无需额外安装。
+
+```bash
+yanfu --version   # 验证安装
+```
+
+---
 
 ## 快速开始
 
-### 第一步：配置翻译提供商
-
-运行交互式配置向导：
+### 1. 配置翻译提供商
 
 ```bash
 yanfu --config
 ```
 
-或通过 GUI 设置对话框配置。支持的提供商：
+按提示选择提供商 → 模型 → 引擎。默认：**Ollama + gemma3:1b + docling**。
 
-| 提供商 | 配置方式 | 费用 |
-|--------|----------|------|
-| **Ollama**（本地） | `ollama pull qwen3:0.6b` | 免费 |
-| **OpenAI**（云端） | 需要 API 密钥 | 按量付费 |
-| **自定义** | 任何 OpenAI 兼容接口 | 视情况而定 |
+或手动拉取模型：
 
-### 第二步：翻译
+```bash
+ollama pull gemma3:1b        # 默认模型
+ollama pull qwen2.5:1.5b     # 中文翻译更好
+ollama pull qwen2.5:7b       # 最佳质量
+```
 
-#### 图形界面
+### 2. 启动 GUI
 
 ```bash
 yanfu --gui
 ```
 
-GUI 功能：
-- **左右分栏**：左侧原文 PDF，右侧译文
-- **同步滚动**：开启同步可同时浏览两侧内容
-- **独立线程**：PDF 解析和翻译在后台线程运行——界面始终保持响应
-- **导出选项**：另存为 Markdown 或翻译后的 PDF
+### 3. 翻译
 
-#### 命令行
+| 步骤 | 按钮 | 作用 |
+|------|------|------|
+| 打开 PDF | 📂 Open PDF | 加载 PDF 到左栏 |
+| 解析 | 📄 Parse PDF | 提取文字（中间栏显示 Markdown） |
+| 翻译 | ▶ Translate | 翻译已解析文本（右栏显示结果） |
+| 保存 | 💾 Save MD / 💾 Save PDF | 导出翻译 |
+
+**一键操作**：打开 PDF → 点 ▶ Translate（自动先解析再翻译）。
+
+### 4. 命令行
 
 ```bash
-# 翻译 PDF 为中文
+# 翻译为中文
 yanfu paper.pdf -l zh
 
 # 翻译为日文
 yanfu paper.pdf -l ja
 
-# 翻译多个文件
-yanfu paper1.pdf paper2.pdf -l fr
+# 指定引擎
+yanfu paper.pdf --engine marker -l zh
 
 # 批量处理目录
-yanfu ./papers --batch -l es
+yanfu ./papers --batch -l es -v
 
-# 详细日志输出
-yanfu paper.pdf -v
-
-# JSON 格式输出
+# JSON 输出
 yanfu paper.pdf --json
-
-# 列出当前提供商的可用模型
-yanfu --list-models
-
-# 测试与提供商的连接
-yanfu --test-connection
 ```
 
-## 命令行参数
+---
 
-| 参数 | 说明 |
+## GUI 布局
+
+```
+┌────────────────┬─────────────────────┬─────────────────────┐
+│  📄 原文        │  📝 解析后 Markdown  │  🌐 翻译结果         │
+│  ┌──────────┐  │  🔄Plain ✕Clear    │  🔗同步 🔄Plain ✕   │
+│  │          │  │  📄解析  ▶翻译      │  ▶翻译 💾保存       │
+│  │   PDF    │  │  ┌──────────────┐   │  ┌──────────────┐   │
+│  │  查看器   │  │  │ 渲染或纯文本  │   │  │ 渲染或纯文本  │   │
+│  │          │  │  │              │   │  │              │   │
+│  └──────────┘  │  └──────────────┘   │  └──────────────┘   │
+│  ◀ 1/11页 ▶   │  ### 方法          │  ### 方法           │
+│                │  |列1|列2|          │  |列1|列2|          │
+│                │  [Formula]          │  [公式]             │
+└────────────────┴─────────────────────┴─────────────────────┘
+│  状态: 正在翻译...     进度: [████████░░] 80%              │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 三栏说明
+
+| 栏位 | 内容 | 操作 |
+|------|------|------|
+| 左 | PDF 查看器，支持翻页 | Open PDF，上一页/下一页 |
+| 中 | 解析后 Markdown | 解析、清除、渲染切换 |
+| 右 | 翻译结果 | 翻译、清除、保存、渲染切换 |
+
+### 工具栏
+
+- 📂 打开 PDF
+- ▶ 翻译
+- 💾 保存（Markdown 或 PDF）
+- 🔗 同步滚动（开关）
+
+### 设置（Ctrl+,）
+
+| 分类 | 选项 |
 |------|------|
-| `--gui` | 启动图形界面 |
-| `--config` | 运行配置向导 |
-| `--test-connection` | 测试提供商连接 |
-| `--list-models` | 列出提供商可用模型 |
-| `--reset-config` | 重置配置为默认值 |
-| `-V`, `--version` | 显示版本 |
-| `-v`, `--verbose` | 启用详细输出 |
-| `-o`, `--output` | 输出目录 |
-| `--json` | JSON 格式输出 |
-| `-q`, `--quiet` | 抑制非必要输出 |
-| `-l`, `--lang` | 目标语言（默认：en） |
-| `--source-lang` | 源语言（默认：auto） |
-| `--use-ocr` | 启用扫描文档 OCR |
-| `--engine` | PDF 解析引擎（auto/marker/pymupdf/docling/pdfplumber/mineru/easyocr 等） |
-| `--temperature` | 翻译温度（0.0-1.0） |
-| `--batch` | 批量处理目录 |
-| `--list-langs` | 列出支持的语言 |
+| 翻译提供商 | 提供商（Ollama/OpenAI/自定义）、Base URL、API Key、模型 |
+| 模型列表 | 刷新模型、测试连接 |
+| PDF 解析引擎 | 14 种引擎，可用状态（绿色 ✓ / 红色 ✗） |
+| 设备 | Auto / CPU / CUDA / Apple MPS / DirectML(Vulkan) |
+| 下载/重下载 | 下载所选引擎模型（Force 清空缓存重下） |
+| 翻译设置 | 源语言/目标语言、Temperature |
+| 输出设置 | 页面大小、字号、边距 |
 
-### 国内镜像 / ModelScope
+---
 
-YanFu 默认使用 **国内 HF 镜像** (`https://hf-mirror.com`) 下载引擎模型，无需科学上网。只需要正常安装即可：
+## PDF 解析引擎（14 种）
 
-```bash
-pip install yanfu
+| 引擎 | 类型 | 模型 | OCR | 适用场景 |
+|------|------|------|:---:|----------|
+| **docling**（默认）| 本地 | ~1.5GB | ✓ | 质量速度均衡，表格处理好 |
+| **marker** | 本地 | ~3GB | ✓ | 最佳综合：排版+OCR+图片+公式 |
+| **mineru** | 本地 | ~1.5GB | ✓ | 中文文档 |
+| **easyocr** | 本地 | ~300MB | ✓ | 80+ 语言，轻量 |
+| **doctr** | 本地 | ~500MB | ✓ | 旋转文字处理，轻量 |
+| **nougat** | 本地 | ~1.5GB | ✓ | 学术论文 |
+| **pymupdf** | 本地 | 无 | ✗ | 最快，数字 PDF |
+| **pdfplumber** | 本地 | 无 | ✗ | 表格提取 |
+| **llamaparse** | 云端 | 云端 | ✓ | 优秀质量（需 LlamaCloud Key） |
+| **mathpix** | 云端 | 云端 | ✓ | 数学/STEM 公式 |
+| **mineru-cloud** | 云端 | 云端 | ✓ | 中文文档（需 API Key） |
+| **doc2x** | 云端 | 云端 | ✓ | 最佳公式 LaTeX 输出 |
+| **auto** | 自动 | — | — | 自动选择最佳可用引擎 |
+
+**公式提示**：论文有大量数学公式，请用 **Marker** 或 **Doc2X**。
+
+---
+
+## 命令行参考
+
+```
+yanfu [OPTIONS] [input ...]
+
+参数:
+  --gui              启动图形界面
+  --config           运行配置向导
+  --test-connection  测试提供商连接
+  --list-models      列出提供商模型
+  --reset-config     重置配置
+  -V, --version      显示版本
+  -v, --verbose      详细输出
+  -o, --output DIR   输出目录
+  --json             JSON 输出
+  -l, --lang CODE    目标语言（默认: en）
+  --source-lang CODE 源语言（默认: auto）
+  --engine ENGINE    解析引擎
+  --temperature F    翻译温度 (0.0-1.0)
+  --batch            批量处理
+  --list-langs       列出支持语言
 ```
 
-首次运行时，marker-pdf 等引擎的模型会自动从国内镜像下载到 `~/.cache/datalab/models/`。
-
-### PDF 解析引擎
-
-YanFu 支持 **14 种解析引擎**，可通过 `--engine` 参数或 GUI 设置选择：
-
-| 引擎 | 模型大小 | OCR | 特长 |
-|------|---------|-----|------|
-| **marker** | ~3GB | ✓ | 最佳综合质量，布局+OCR+图片 |
-| **docling** | ~1.5GB | ✓ | IBM，质量速度均衡 |
-| **mineru** | ~1.5GB | ✓ | 中文文档最佳 |
-| **easyocr** | ~300MB | ✓ | 80+ 语言，轻量 |
-| **doctr** | ~500MB | ✓ | 轻量 OCR |
-| **nougat** | ~1.5GB | ✓ | 学术论文 |
-| **surya-lite** | ~2GB | ✓ | Surya 纯 OCR |
-| **pymupdf** | 无 | ✗ | 最快，数字 PDF |
-| **pdfplumber** | 无 | ✗ | 表格提取，轻量 |
-| **llamaparse** | 云端 | ✓ | API Key 需配置 |
-| **mathpix** | 云端 | ✓ | 数学/STEM 公式 |
-| **mineru-cloud** | 云端 | ✓ | 中文云端 API |
-| **doc2x** | 云端 | ✓ | LaTeX 公式输出 |
-| **auto** | - | - | 自动选择最佳引擎 |
-
-在 GUI 中点击 **Settings** → 选择引擎 → 点击下载按钮即可预下载模型。
-
-## 支持的语言
+### 支持的语言
 
 | 代码 | 语言 | 代码 | 语言 |
 |------|------|------|------|
@@ -160,111 +189,93 @@ YanFu 支持 **14 种解析引擎**，可通过 `--engine` 参数或 GUI 设置�
 | zh-Hant | 繁体中文 | ja | 日语 |
 | ko | 韩语 | fr | 法语 |
 | de | 德语 | es | 西班牙语 |
-| ru | 俄语 | it | 意大利语 |
-| pt | 葡萄牙语 | ar | 阿拉伯语 |
+| ru | 俄语 | ar | 阿拉伯语 |
 | hi | 印地语 | th | 泰语 |
-| vi | 越南语 | | |
+| vi | 越南语 | it | 意大利语 |
+| pt | 葡萄牙语 | | |
+
+---
 
 ## Python API
 
 ```python
-from yanfu import yanfu_translate_file, ToolResult
+from yanfu import yanfu_translate_file
+from yanfu.translator import ConfigManager
 
-# 翻译单个文件
-result = yanfu_translate_file(
-    input_path="paper.pdf",
-    target_lang="zh",
-)
+# 配置
+config = ConfigManager()
+config.set("provider", "ollama")
+config.set("model", "gemma3:1b")
+config.save_config()
 
-print(result.success)    # True / False
-print(result.data)       # 输出路径和元数据
-print(result.metadata)   # 版本和时间信息
+# 翻译
+result = yanfu_translate_file("paper.pdf", target_lang="zh", config=config)
+print(result.data["output_pdf"])  # 翻译后 PDF 路径
 ```
 
-### 批量处理
+### 批量
 
 ```python
 from yanfu import yanfu_translate_files
 
 result = yanfu_translate_files(
-    input_paths=["paper1.pdf", "paper2.caj"],
+    ["paper1.pdf", "paper2.pdf"],
     target_lang="ja",
-    use_ocr=True,
+    config=config,
 )
-
 for r in result.data["results"]:
-    print(f"{r['file']}: {'成功' if r['success'] else '失败'}")
+    print(r["file"], "成功" if r["success"] else "失败")
 ```
 
-### 配置管理
+---
 
-```python
-from yanfu.translator import ConfigManager
+## 模型下载
 
-config = ConfigManager()
+### 自动下载
 
-# 检查是否已配置
-if not config.is_configured():
-    print("运行 'yanfu --config' 进行设置")
+引擎首次使用时自动下载模型（终端显示 tqdm 进度条）。可在设置中预下载：
 
-# 修改设置
-config.set("provider", "ollama")
-config.set("model", "qwen3:0.6b")
-config.set("base_url", "http://localhost:11434")
-config.save_config()
+1. 设置 → 选择引擎 → 点击 **⬇ Download Selected Engine Models**
+2. 终端显示下载进度和缓存路径
+3. 点击 **🔄 Re-download (Force)** 清空缓存重下
 
-# 重置为默认值
-config.reset()
-```
+### 缓存路径
 
-## 架构设计
+| 引擎 | 缓存位置 |
+|------|----------|
+| marker | `~/.cache/datalab/models/` 或 `%LOCALAPPDATA%\datalab\models\` |
+| docling / doctr | `~/.cache/huggingface/hub/` |
+| easyocr | `<easyocr 安装目录>/model/` |
+| pymupdf / pdfplumber | 无需缓存 |
 
-YanFu 采用清晰的多线程架构：
+---
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    GUI（主线程）                       │
-│  ┌──────────────┐    ┌──────────────────────────┐   │
-│  │  PDF 查看器    │    │      译文编辑器            │   │
-│  │  (PyMuPDF)    │    │    (QTextEdit)            │   │
-│  └──────────────┘    └──────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-┌─────────────────┐          ┌──────────────────────┐
-│  ParseWorker     │          │  TranslateWorker      │
-│  （后台线程）      │          │  （后台线程）          │
-│  - PDF 解析      │          │  - API 调用           │
-│  - 图片提取      │          │  - 分块翻译           │
-│  - Markdown 生成 │          │  - PDF 渲染           │
-└─────────────────┘          └──────────────────────┘
-```
+## 常见问题
 
-- **ParseWorker**：使用 marker-pdf 或 PyMuPDF 从 PDF 提取文本、图片和公式
-- **TranslateWorker**：将文本块发送至 Ollama/OpenAI API，组装结果，渲染 PDF
-- **UI 线程**：始终保持响应——解析和翻译期间不会卡顿
+| 问题 | 解决方法 |
+|------|----------|
+| `ModuleNotFoundError: PySide6` | `pip install yanfu`（包含全部依赖） |
+| 翻译输出为空 | `ollama list` 检查模型 → 换大模型 |
+| "No extractable text" | PDF 是图片版 → 用 EasyOCR 或 Marker |
+| Docling 公式缺失 | 换 Marker 引擎（支持公式），或 Doc2X 云端 |
+| QThread 崩溃 | 更新到最新版（`git pull`） |
+| 下载卡住 | 设置 → Re-download (Force) 清缓存 |
+| 不知道模型路径 | 终端会打印缓存路径 |
+
+---
 
 ## 开发
 
 ```bash
-# 克隆并安装开发版本
 git clone https://github.com/CodeOfMe/YanFu.git
 cd YanFu
 pip install -e ".[dev]"
-
-# 运行测试
 pytest tests/ -v
-
-# 代码检查和格式化
 ruff check .
-ruff format .
 ```
+
+---
 
 ## 许可证
 
 GPL-3.0-or-later
-
-## 参见
-
-- [NuoYi](https://github.com/cycleuser/NuoYi) - PDF/DOCX 转 Markdown 转换器
-- [TransPaste](https://github.com/CodeOfMe/TransPaste) - 本地大模型剪贴板翻译工具

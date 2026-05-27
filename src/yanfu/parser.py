@@ -346,33 +346,21 @@ class PDFParser:
         }
 
     def _parse_with_marker(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
-        """Parse PDF using marker-pdf."""
+        """Parse PDF using marker-pdf — same approach as NuoYi."""
         import os
-
-        # Use HF mirror for mainland China
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-        # Resolve device
-        device = self.device
-        if device == "auto":
-            device = self._detect_best_device()
+        # device: None=auto, "cpu", "cuda", "mps", "dml"
+        dev = None if self.device == "auto" else self.device
 
         from marker.config.parser import ConfigParser
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict
         from marker.output import text_from_rendered
 
-        logger.debug(f"Parsing PDF with marker-pdf on {device}: {pdf_path}")
-
-        config = {
-            "output_format": "markdown",
-            "languages": self.langs,
-        }
-        if self.use_ocr:
-            config["force_ocr"] = True
-
-        config_parser = ConfigParser(config)
-        artifact_dict = create_model_dict(device=device)
+        print(f"\n[YanFu] Loading marker-pdf models on {dev or 'auto'}...")
+        print("[YanFu] (First run downloads ~3 GB of model weights)")
+        artifact_dict = create_model_dict(device=dev)
 
         converter = PdfConverter(
             config=config_parser.generate_config_dict(),

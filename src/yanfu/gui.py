@@ -504,33 +504,28 @@ class _EngineModelDownloader(QThread):
                     cache = Path(user_cache_dir("datalab")) / "models"
                     if cache.exists():
                         shutil.rmtree(cache)
-                        self.signals.progress.emit("Cache cleared")
+                        print(f"[YanFu] Cleared cache: {cache}")
                 
-                # Let surya's built-in downloader handle everything
+                from platformdirs import user_cache_dir
                 cache_dir = Path(user_cache_dir("datalab")) / "models"
-                print(f"\n[YanFu] 📁 Surya cache: {cache_dir}")
-                print(f"[YanFu] 📁 Downloading from: https://models.datalab.to")
-                self.signals.progress.emit(f"Surya cache: {cache_dir}")
-                self.signals.progress.emit("Downloading (check terminal for progress)...")
+                print(f"\n[YanFu] Loading marker-pdf models...")
+                print(f"[YanFu] 📁 Cache: {cache_dir}")
+                print(f"[YanFu] (First run downloads ~3 GB)")
+                self.signals.progress.emit("Downloading marker models (check terminal)...")
                 
-                # Enable huggingface progress bars
+                # Exactly like NuoYi: just call create_model_dict()
                 from huggingface_hub.utils import enable_progress_bars
                 enable_progress_bars()
-                
-                # This triggers surya's own downloader with tqdm progress in terminal
                 from marker.models import create_model_dict
                 create_model_dict()
                 
-                # Verify files actually exist
-                total = 0
-                if cache_dir.exists():
-                    for f in cache_dir.rglob("*.safetensors"):
-                        total += f.stat().st_size
+                # Verify
+                total = sum(f.stat().st_size for f in cache_dir.rglob("*.safetensors") if f.is_file()) if cache_dir.exists() else 0
                 if total > 0:
-                    print(f"[YanFu] ✅ Models cached: {total/1024/1024:.0f}MB at {cache_dir}")
-                    self.signals.finished.emit(f"Marker models ready ({total/1024/1024:.0f}MB)\n📁 {cache_dir}")
+                    print(f"[YanFu] ✅ Models ready: {total/1024/1024:.0f}MB at {cache_dir}")
+                    self.signals.finished.emit(f"Ready ({total/1024/1024:.0f}MB)")
                 else:
-                    self.signals.error.emit(f"No model files found in {cache_dir}. Check terminal.")
+                    self.signals.error.emit(f"No models at {cache_dir}. Check terminal output.")
 
             elif self._engine == "docling":
                 if self._force:

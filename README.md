@@ -1,77 +1,80 @@
 # YanFu
 
-PDF/CAJ document translator with layout-preserving PDF generation using local LLMs.
+PDF/CAJ document translator with layout-preserving PDF generation using Ollama or OpenAI-compatible APIs.
 
-**Zero-configuration**: Install once, run immediately. Models auto-download on first use.
+**Simple setup**: Install once, configure your translation provider, and translate. Supports local Ollama, OpenAI, and any OpenAI-compatible endpoint.
 
-## Features / 功能特性
+## Features
 
-- **Zero-Config Setup**: `pip install yanfu` then run. No Ollama, no API keys, no external services.
-- **Auto-Download Models**: GGUF models download automatically from ModelScope/HuggingFace on first run.
-- **Multi-format Support**: Parse PDF and CAJ (Chinese Academic Journal) files.
-- **Local LLM Translation**: Translate using GGUF models (gemma3:1b, qwen3:0.6b) via llama-cpp-python.
-- **Layout Preservation**: Generate PDF output with preserved layout, images, and formulas.
-- **OCR Support**: Handle scanned documents with OCR.
-- **Batch Processing**: Process multiple files or entire directories.
-- **CLI & API**: Command-line interface and Python API with ToolResult pattern.
-- **Agent Integration**: OpenAI function-calling tools for LLM agents.
+- **Flexible Translation Providers**: Use local Ollama, OpenAI cloud, or any OpenAI-compatible API (vLLM, LM Studio, etc.)
+- **Dynamic Model Discovery**: Automatically fetches available models from your configured provider — no hardcoded model lists
+- **Multi-format Support**: Parse PDF and CAJ (Chinese Academic Journal) files
+- **Layout Preservation**: Generate PDF output with preserved layout, images, and formulas using marker-pdf
+- **OCR Support**: Handle scanned documents with built-in OCR
+- **Batch Processing**: Process multiple files or entire directories
+- **GUI & CLI**: Beautiful PySide6 graphical interface and command-line interface
+- **Python API**: Clean API with ToolResult pattern for programmatic usage
+- **Configuration Wizard**: Interactive setup guide for first-time users
 
-- **零配置**：`pip install yanfu` 后即可运行。无需 Ollama、无需 API 密钥、无需外部服务。
-- **自动下载模型**：GGUF 模型在首次运行时自动从 ModelScope/HuggingFace 下载。
-- **多格式支持**：解析 PDF 和 CAJ（中国学术期刊）文件。
-- **本地大模型翻译**：使用 GGUF 模型（gemma3:1b、qwen3:0.6b）通过 llama-cpp-python 翻译。
-- **排版保留**：生成保留排版、图片和公式的 PDF 输出。
-- **OCR 支持**：处理扫描文档。
-- **批量处理**：处理多个文件或整个目录。
-- **CLI 和 API**：命令行界面和带有 ToolResult 模式的 Python API。
-- **智能体集成**：用于 LLM 智能体的 OpenAI 函数调用工具。
-
-## Requirements / 系统要求
+## Requirements
 
 - Python 3.10+
 - macOS / Linux / Windows
-- CPU only (GGUF models run on CPU, no GPU required)
-- ~1GB disk space for model
+- Ollama (for local translation) or OpenAI API key (for cloud translation)
+- CPU-friendly: All document parsing runs efficiently on CPU
 
-## Installation / 安装
+## Installation
 
 ```bash
-# Basic installation (includes all dependencies)
+# Install with all dependencies (recommended)
 pip install yanfu
 
-# With OCR support
-pip install yanfu[ocr]
-
-# Full installation
-pip install yanfu[all]
+# Development extras
+pip install yanfu[dev]
 ```
 
-That's it! No additional setup needed. Models will auto-download on first run.
+That's it! All core dependencies including PySide6 GUI, marker-pdf OCR, and document parsers are included.
 
-## Quick Start / 快速开始
+## Quick Start
 
-### GUI Application / 图形界面
+### Step 1: Configure Your Translation Provider
+
+Run the interactive configuration wizard:
 
 ```bash
-# Launch GUI
-yanfu --gui
+yanfu --config
+```
 
-# Or with PySide6 installed
-pip install yanfu[gui]
+Or configure via the GUI Settings dialog. Supported providers:
+
+| Provider | Setup | Cost |
+|----------|-------|------|
+| **Ollama** (Local) | `ollama pull qwen3:0.6b` | Free |
+| **OpenAI** (Cloud) | API key required | Pay-per-use |
+| **Custom** | Any OpenAI-compatible endpoint | Varies |
+
+### Step 2: Translate
+
+#### GUI Application
+
+```bash
 yanfu --gui
 ```
 
-### CLI / 命令行
+The GUI features:
+- **Side-by-side view**: Original PDF on the left, translation on the right
+- **Synchronized scrolling**: Toggle sync to navigate both panels together
+- **Separate threads**: PDF parsing and translation run in background threads — UI stays responsive
+- **Save options**: Export as Markdown or translated PDF
+
+#### CLI
 
 ```bash
-# Translate a PDF to English (model downloads automatically on first run)
-yanfu paper.pdf
-
-# Translate to Chinese
+# Translate a PDF to Chinese
 yanfu paper.pdf -l zh
 
-# Translate to Japanese with faster model
-yanfu paper.pdf -l ja --model qwen3:0.6b
+# Translate to Japanese
+yanfu paper.pdf -l ja
 
 # Translate multiple files
 yanfu paper1.pdf paper2.pdf -l fr
@@ -79,19 +82,28 @@ yanfu paper1.pdf paper2.pdf -l fr
 # Batch process a directory
 yanfu ./papers --batch -l es
 
-# Verbose output
+# Verbose output with detailed logs
 yanfu paper.pdf -v
 
 # JSON output
 yanfu paper.pdf --json
+
+# List available models from your configured provider
+yanfu --list-models
+
+# Test connection to your provider
+yanfu --test-connection
 ```
 
-## Usage / 使用方法
-
-### CLI Flags / 命令行参数
+## CLI Flags
 
 | Flag | Description |
 |------|-------------|
+| `--gui` | Launch graphical interface |
+| `--config` | Run configuration wizard |
+| `--test-connection` | Test provider connection |
+| `--list-models` | List available models from provider |
+| `--reset-config` | Reset configuration to defaults |
 | `-V`, `--version` | Show version |
 | `-v`, `--verbose` | Enable verbose output |
 | `-o`, `--output` | Output directory |
@@ -99,30 +111,13 @@ yanfu paper.pdf --json
 | `-q`, `--quiet` | Suppress non-essential output |
 | `-l`, `--lang` | Target language (default: en) |
 | `--source-lang` | Source language (default: auto) |
-| `--model` | Translation model (default: gemma3:1b) |
-| `--model-path` | Direct path to GGUF file |
-| `--cache-dir` | Model cache directory |
 | `--use-ocr` | Enable OCR for scanned docs |
 | `--engine` | PDF parser (auto/pymupdf/marker/pdfplumber) |
 | `--temperature` | Translation temperature (0.0-1.0) |
 | `--batch` | Batch process directory |
 | `--list-langs` | List supported languages |
-| `--list-models` | List available models |
-| `--download-model` | Download a model without translating |
-| `--list-downloaded` | List downloaded models |
-| `--cleanup-models` | Remove all downloaded models |
 
-### Translation Models / 翻译模型
-
-| Model | Size | Quality | Speed |
-|-------|------|---------|-------|
-| gemma3:1b | ~780MB | Good | Medium |
-| qwen3:0.6b | ~420MB | Basic | Fast |
-| qwen3:1.8b | ~1.1GB | Best | Slow |
-
-Models are stored in `~/.cache/yanfu/models/` after download.
-
-### Supported Languages / 支持的语言
+## Supported Languages
 
 | Code | Language | Code | Language |
 |------|----------|------|----------|
@@ -135,45 +130,15 @@ Models are stored in `~/.cache/yanfu/models/` after download.
 | hi | Hindi | th | Thai |
 | vi | Vietnamese | | |
 
-## Standalone Installer / 独立安装包
-
-### Windows MSI
-
-Download the MSI installer for a complete offline experience:
-
-```bash
-# Build MSI with bundled model
-./scripts/build_msi.sh
-
-# Or on Windows
-scripts\build_msi.bat gemma3:1b
-```
-
-The MSI installer includes:
-- All dependencies
-- PySide6 GUI
-- Pre-downloaded GGUF model (~780MB)
-- No internet required after installation
-
-### macOS DMG / Linux AppImage
-
-```bash
-briefcase create macOS dmg && briefcase build macOS dmg && briefcase package macOS dmg
-briefcase create linux appimage && briefcase build linux appimage && briefcase package linux appimage
-```
-
-See [PACKAGING.md](PACKAGING.md) for detailed instructions.
-
 ## Python API
 
 ```python
 from yanfu import yanfu_translate_file, ToolResult
 
-# Translate a single file (model auto-downloads on first use)
+# Translate a single file
 result = yanfu_translate_file(
     input_path="paper.pdf",
     target_lang="zh",
-    model_name="gemma3:1b",
 )
 
 print(result.success)    # True / False
@@ -181,7 +146,7 @@ print(result.data)       # Output paths and metadata
 print(result.metadata)   # Version and timing info
 ```
 
-### Batch Processing / 批量处理
+### Batch Processing
 
 ```python
 from yanfu import yanfu_translate_files
@@ -196,66 +161,55 @@ for r in result.data["results"]:
     print(f"{r['file']}: {'OK' if r['success'] else 'Failed'}")
 ```
 
-### Model Management / 模型管理
+### Configuration Management
 
 ```python
-from yanfu.translator import ModelManager
+from yanfu.translator import ConfigManager
 
-mm = ModelManager()
+config = ConfigManager()
 
-# List downloaded models
-print(mm.list_downloaded_models())
+# Check if configured
+if not config.is_configured():
+    print("Run 'yanfu --config' to set up")
 
-# Download a specific model
-mm.download_model("qwen3:0.6b")
+# Modify settings
+config.set("provider", "ollama")
+config.set("model", "qwen3:0.6b")
+config.set("base_url", "http://localhost:11434")
+config.save_config()
 
-# Check if model exists
-print(mm.is_model_downloaded("gemma3:1b"))
-
-# Cleanup to free disk space
-mm.cleanup()  # Remove all models
-mm.cleanup("qwen3:0.6b")  # Remove specific model
+# Reset to defaults
+config.reset()
 ```
 
-## Agent Integration / 智能体集成
+## Architecture
 
-YanFu provides OpenAI function-calling tools for LLM agent integration:
-
-```python
-from yanfu.tools import TOOLS, dispatch
-
-# TOOLS contains the function schema for OpenAI API
-# dispatch() routes tool calls to the appropriate function
-
-# Example with OpenAI API
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Translate this PDF to Chinese"}],
-    tools=TOOLS,
-)
-
-# Dispatch the tool call
-tool_call = response.choices[0].message.tool_calls[0]
-result = dispatch(tool_call.function.name, tool_call.function.arguments)
-```
-
-## CLI Help / 命令行帮助
+YanFu uses a clean multi-threaded architecture:
 
 ```
-$ yanfu --help
-usage: yanfu [-h] [-V] [-v] [-o OUTPUT] [--json] [-q] [-l LANG]
-             [--source-lang SOURCE_LANG] [--model MODEL] [--model-path MODEL_PATH]
-             [--cache-dir CACHE_DIR] [--use-ocr] [--engine ENGINE]
-             [--temperature TEMPERATURE] [--page-size PAGE_SIZE]
-             [--font FONT] [--font-size FONT_SIZE] [--margin MARGIN] [--batch]
-             [--list-langs] [--list-models] [--download-model MODEL]
-             [--list-downloaded] [--cleanup-models]
-             [input ...]
-
-YanFu - Translate PDF/CAJ documents using local LLMs (zero-configuration)
+┌─────────────────────────────────────────────────────┐
+│                    GUI (Main Thread)                  │
+│  ┌──────────────┐    ┌──────────────────────────┐   │
+│  │  PDF Viewer   │    │    Translation Editor     │   │
+│  │  (PyMuPDF)    │    │    (QTextEdit)            │   │
+│  └──────────────┘    └──────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+┌─────────────────┐          ┌──────────────────────┐
+│  ParseWorker     │          │  TranslateWorker      │
+│  (Background)    │          │  (Background)         │
+│  - PDF parsing   │          │  - API calls          │
+│  - Image extract │          │  - Chunk translation  │
+│  - Markdown gen  │          │  - PDF rendering      │
+└─────────────────┘          └──────────────────────┘
 ```
 
-## Development / 开发
+- **ParseWorker**: Extracts text, images, and formulas from PDF using marker-pdf or PyMuPDF
+- **TranslateWorker**: Sends text chunks to Ollama/OpenAI API, assembles results, renders PDF
+- **UI Thread**: Remains responsive — no blocking during parsing or translation
+
+## Development
 
 ```bash
 # Clone and install for development
@@ -271,11 +225,11 @@ ruff check .
 ruff format .
 ```
 
-## License / 许可证
+## License
 
 GPL-3.0-or-later
 
-## See Also / 参见
+## See Also
 
 - [NuoYi](https://github.com/cycleuser/NuoYi) - PDF/DOCX to Markdown converter
 - [TransPaste](https://github.com/CodeOfMe/TransPaste) - Local LLM clipboard translator

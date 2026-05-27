@@ -44,10 +44,15 @@ class PDFParser:
         Returns:
             Dictionary with markdown text, images, and metadata.
         """
+        import logging
+        logger = logging.getLogger("yanfu")
+        
         pdf_path = str(Path(pdf_path).resolve())
+        logger.debug(f"Resolved PDF path: {pdf_path}")
 
         if self.engine == "auto":
             self.engine = self._select_engine(pdf_path)
+            logger.debug(f"Selected engine: {self.engine}")
 
         if self.engine == "marker":
             return self._parse_with_marker(pdf_path, output_dir)
@@ -65,11 +70,7 @@ class PDFParser:
         Returns:
             Engine name.
         """
-        if self.use_ocr:
-            if MarkerConverter.is_available():
-                return "marker"
-            return "pymupdf"
-
+        # Default to marker for best layout/image/formula preservation
         if MarkerConverter.is_available():
             return "marker"
 
@@ -109,14 +110,31 @@ class PDFParser:
             sys.stderr.close()
             sys.stderr = old_stderr
 
+        logger.debug(f"Opened PDF with {len(doc)} pages")
+
         markdown_parts = []
 
         for page_idx in range(len(doc)):
             page = doc[page_idx]
-            text = page.get_text("markdown")
-            if text:
-                markdown_parts.append(text)
-            logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars")
+            try:
+                text = page.get_text("markdown")
+                if text is None:
+                    text = page.get_text("text")
+                    logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars (plain text fallback)")
+                else:
+                    logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars (markdown)")
+                if text:
+                    markdown_parts.append(text)
+            except Exception as e:
+                logger.warning(f"  Page {page_idx + 1} extraction failed: {e}")
+                # Fallback to plain text
+                try:
+                    text = page.get_text("text")
+                    if text:
+                        markdown_parts.append(text)
+                        logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars (error fallback)")
+                except Exception as e2:
+                    logger.error(f"  Page {page_idx + 1} plain text also failed: {e2}")
 
         doc.close()
 

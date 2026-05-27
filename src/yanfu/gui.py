@@ -2,11 +2,13 @@
 
 Provides a complete graphical interface for document translation
 with side-by-side PDF viewing, synchronized scrolling, and model management.
+Uses separate threads for parsing and translation to avoid UI blocking.
 """
 
 from __future__ import annotations
 
 import sys
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -44,12 +46,31 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .core import DocumentProcessor
-from .translator import ConfigManager, ModelFetcher, OllamaTranslator
-from .utils import LANGUAGE_MAP, find_documents
+from .parser import parse_document
+from .renderer import render_pdf
+from .translator import ConfigManager, ModelFetcher, OllamaTranslator, translate_markdown
+from .utils import LANGUAGE_MAP, clean_markdown, find_documents
+
+logger = logging.getLogger("yanfu")
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
+@dataclass
+class ParseResult:
+    """Result of PDF parsing."""
+    success: bool
+    markdown: str = ""
+    images: dict = None
+    page_count: int = 0
+    engine: str = ""
+    error: str = ""
+
+    def __post_init__(self):
+        if self.images is None:
+            self.images = {}
+
 
 @dataclass
 class TranslationTask:
@@ -83,107 +104,201 @@ class TaskResult:
 
 
 # ---------------------------------------------------------------------------
-# Worker signals and thread
+# Worker threads
 # ---------------------------------------------------------------------------
 
-class WorkerSignals(QObject):
-    """Signals for translation worker."""
-    progress = Signal(str, str)
-    task_started = Signal(str, int, int)
-    task_finished = Signal(object)
-    all_finished = Signal(list)
+class ParseWorkerSignals(QObject):
+    """Signals for parse worker."""
+    started = Signal(str)
+    progress = Signal(str, int, int)  # message, current, total
+    finished = Signal(object)  # ParseResult
     error = Signal(str)
 
 
-class TranslationWorker(QThread):
-    """Independent thread for running translation tasks."""
+class ParseWorker(QThread):
+    """Background thread for PDF parsing."""
 
     def __init__(
         self,
-        tasks: list[TranslationTask],
+        file_path: str,
         output_dir: str,
+        use_ocr: bool = False,
+        parse_engine: str = "auto",
     ):
         super().__init__()
-        self.tasks = tasks
+        self.file_path = file_path
         self.output_dir = output_dir
+        self.use_ocr = use_ocr
+        self.parse_engine = parse_engine
+        self.signals = ParseWorkerSignals()
         self._cancel_requested = False
         self._mutex = QMutex()
-        self.signals = WorkerSignals()
 
     def cancel(self):
-        """Request cancellation."""
         with QMutexLocker(self._mutex):
             self._cancel_requested = True
 
     def is_cancelled(self) -> bool:
-        """Check if cancellation was requested."""
         with QMutexLocker(self._mutex):
             return self._cancel_requested
 
     def run(self):
-        """Execute translation tasks in background thread."""
-        results = []
+        try:
+            self.signals.started.emit(self.file_path)
+            logger.debug(f"[ParseWorker] Starting parse: {self.file_path}")
 
-        for i, task in enumerate(self.tasks):
+            image_dir = Path(self.output_dir) / f"{Path(self.file_path).stem}_images"
+            image_dir.mkdir(parents=True, exist_ok=True)
+
+            self.signals.progress.emit("Extracting text and images...", 0, 100)
+
+            result = parse_document(
+                self.file_path,
+                engine=self.parse_engine,
+                use_ocr=self.use_ocr,
+                output_dir=str(image_dir),
+            )
+
             if self.is_cancelled():
-                self.signals.progress.emit("Cancelled by user", "warn")
-                break
+                self.signals.progress.emit("Cancelled", 100, 100)
+                return
 
-            filename = Path(task.file_path).name
-            self.signals.task_started.emit(filename, i + 1, len(self.tasks))
-            self.signals.progress.emit(f"Processing: {filename}", "info")
+            self.signals.progress.emit("Parsing complete", 100, 100)
 
-            try:
-                processor = DocumentProcessor(
-                    output_dir=self.output_dir,
-                    target_lang=task.target_lang,
-                    source_lang=task.source_lang,
-                    use_ocr=task.use_ocr,
-                    parse_engine=task.parse_engine,
-                    temperature=task.temperature,
-                    page_size=task.page_size,
-                    font_name=task.font_name,
-                    font_size=task.font_size,
-                    margin=task.margin,
-                    config=task.config,
-                    verbose=False,
-                )
+            parse_result = ParseResult(
+                success=True,
+                markdown=result["markdown"],
+                images=result.get("images", {}),
+                page_count=result.get("page_count", 0),
+                engine=result.get("engine", "unknown"),
+            )
 
-                result = processor.process(task.file_path)
+            logger.debug(f"[ParseWorker] Parse complete: {parse_result.page_count} pages, {len(parse_result.images)} images")
+            self.signals.finished.emit(parse_result)
 
-                task_result = TaskResult(
-                    task=task,
-                    success=result.success,
-                    output_pdf=result.output_pdf,
-                    output_md=result.output_md,
-                    error=result.error,
-                    page_count=result.page_count,
-                    image_count=len(result.images),
-                    translation_time=result.translation_time,
-                    total_time=result.total_time,
-                    timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
+        except Exception as e:
+            logger.error(f"[ParseWorker] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
 
-                results.append(task_result)
-                self.signals.task_finished.emit(task_result)
 
-                if result.success:
-                    self.signals.progress.emit(f"Completed: {filename}", "success")
+class TranslateWorkerSignals(QObject):
+    """Signals for translate worker."""
+    started = Signal(str)
+    progress = Signal(str, int, int)  # message, current_chunk, total_chunks
+    finished = Signal(str, str, str)  # translated_md, output_md, output_pdf
+    error = Signal(str)
+
+
+class TranslateWorker(QThread):
+    """Background thread for translation."""
+
+    def __init__(
+        self,
+        markdown: str,
+        source_lang: str,
+        target_lang: str,
+        config: ConfigManager,
+        output_dir: str,
+        file_path: str,
+        page_size: str = "A4",
+        font_size: int = 11,
+        margin: float = 20.0,
+        temperature: float = 0.3,
+    ):
+        super().__init__()
+        self.markdown = markdown
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self.config = config
+        self.output_dir = output_dir
+        self.file_path = file_path
+        self.page_size = page_size
+        self.font_size = font_size
+        self.margin = margin
+        self.temperature = temperature
+        self.signals = TranslateWorkerSignals()
+        self._cancel_requested = False
+        self._mutex = QMutex()
+
+    def cancel(self):
+        with QMutexLocker(self._mutex):
+            self._cancel_requested = True
+
+    def is_cancelled(self) -> bool:
+        with QMutexLocker(self._mutex):
+            return self._cancel_requested
+
+    def run(self):
+        try:
+            self.signals.started.emit(self.file_path)
+            logger.debug(f"[TranslateWorker] Starting translation: {self.file_path}")
+
+            # Split markdown into chunks for progress tracking
+            from .translator import _split_markdown
+            chunks = _split_markdown(self.markdown)
+            total_chunks = len(chunks)
+            logger.debug(f"[TranslateWorker] Split into {total_chunks} chunks")
+
+            translated_chunks = []
+            translator = OllamaTranslator(
+                provider=self.config.get("provider", "ollama"),
+                base_url=self.config.get("base_url", "http://localhost:11434"),
+                model=self.config.get("model", ""),
+                api_key=self.config.get("api_key", ""),
+                temperature=self.config.get("temperature", self.temperature),
+                max_tokens=self.config.get("max_tokens", 4096),
+            )
+
+            for i, chunk in enumerate(chunks):
+                if self.is_cancelled():
+                    self.signals.progress.emit("Cancelled", i, total_chunks)
+                    return
+
+                if chunk.strip():
+                    self.signals.progress.emit(f"Translating chunk {i+1}/{total_chunks}...", i, total_chunks)
+                    translated = translator.translate(chunk, self.source_lang, self.target_lang)
+                    translated_chunks.append(translated)
                 else:
-                    self.signals.progress.emit(f"Failed: {filename}: {result.error}", "error")
+                    translated_chunks.append(chunk)
 
-            except Exception as e:
-                task_result = TaskResult(
-                    task=task,
-                    success=False,
-                    error=str(e),
-                    timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                results.append(task_result)
-                self.signals.task_finished.emit(task_result)
-                self.signals.progress.emit(f"Error: {filename}: {str(e)}", "error")
+            if self.is_cancelled():
+                return
 
-        self.signals.all_finished.emit(results)
+            self.signals.progress.emit("Rendering PDF...", total_chunks, total_chunks)
+
+            translated_markdown = "\n\n".join(translated_chunks)
+            translated_markdown = clean_markdown(translated_markdown)
+
+            # Save Markdown
+            stem = Path(self.file_path).stem
+            output_md = str(Path(self.output_dir) / f"{stem}_{self.target_lang}.md")
+            Path(output_md).write_text(translated_markdown, encoding="utf-8")
+            logger.debug(f"[TranslateWorker] Saved Markdown: {output_md}")
+
+            # Render PDF
+            image_dir = Path(self.output_dir) / f"{stem}_images"
+            output_pdf = str(Path(self.output_dir) / f"{stem}_{self.target_lang}.pdf")
+
+            render_pdf(
+                translated_markdown,
+                output_path=output_pdf,
+                image_dir=str(image_dir) if image_dir.exists() else None,
+                page_size=self.page_size,
+                font_size=self.font_size,
+                margin=self.margin,
+            )
+            logger.debug(f"[TranslateWorker] Saved PDF: {output_pdf}")
+
+            self.signals.progress.emit("Translation complete", total_chunks, total_chunks)
+            self.signals.finished.emit(translated_markdown, output_md, output_pdf)
+
+        except Exception as e:
+            logger.error(f"[TranslateWorker] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -242,14 +357,7 @@ class PDFViewerWidget(QWidget):
 
     def load_pdf(self, file_path: str):
         """Load a PDF file for display."""
-        import logging
-        logger = logging.getLogger("yanfu")
-        
-        logger.debug(f"Opening PDF: {file_path}")
-        
-        # Suppress MuPDF errors by redirecting stderr temporarily
         import os
-        import sys
         old_stderr = sys.stderr
         try:
             sys.stderr = open(os.devnull, 'w')
@@ -260,7 +368,7 @@ class PDFViewerWidget(QWidget):
             
         self.total_pages = len(self.doc)
         self.current_page = 0
-        logger.debug(f"PDF opened: {self.total_pages} pages")
+        logger.debug(f"[PDFViewer] Loaded: {self.total_pages} pages")
         self._render_page()
         self._update_page_label()
 
@@ -559,11 +667,12 @@ class YanFuMainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
 
-        self._worker: TranslationWorker | None = None
-        self._task_results: list[TaskResult] = []
+        self._parse_worker: ParseWorker | None = None
+        self._translate_worker: TranslateWorker | None = None
         self._current_pdf_path: str | None = None
         self._current_md_path: str | None = None
         self._current_md_content: str = ""
+        self._parsed_markdown: str = ""
         self.config = ConfigManager()
 
         self._build_ui()
@@ -610,6 +719,11 @@ class YanFuMainWindow(QMainWindow):
         self.sync_scroll_check.toggled.connect(self._on_sync_scroll_toggled)
         right_header.addWidget(self.sync_scroll_check)
 
+        self.parse_btn = QPushButton("📄 Parse PDF")
+        self.parse_btn.clicked.connect(self._parse_current)
+        self.parse_btn.setEnabled(False)
+        right_header.addWidget(self.parse_btn)
+
         self.translate_btn = QPushButton("▶ Translate")
         self.translate_btn.clicked.connect(self._translate_current)
         self.translate_btn.setEnabled(False)
@@ -626,6 +740,11 @@ class YanFuMainWindow(QMainWindow):
         right_header.addWidget(self.save_pdf_btn)
 
         right_layout.addLayout(right_header)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        right_layout.addWidget(self.progress_bar)
 
         self.md_editor = QTextEdit()
         self.md_editor.setReadOnly(False)
@@ -689,6 +808,10 @@ class YanFuMainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        parse_action = QAction("📄 Parse", self)
+        parse_action.triggered.connect(self._parse_current)
+        toolbar.addAction(parse_action)
+
         translate_action = QAction("▶ Translate", self)
         translate_action.triggered.connect(self._translate_current)
         toolbar.addAction(translate_action)
@@ -727,7 +850,13 @@ class YanFuMainWindow(QMainWindow):
             print(f"\n[YanFu] Loading PDF: {file_path}")
             self.pdf_viewer.load_pdf(file_path)
             self._current_pdf_path = file_path
-            self.translate_btn.setEnabled(True)
+            self._parsed_markdown = ""
+            self._current_md_content = ""
+            self.md_editor.clear()
+            self.parse_btn.setEnabled(True)
+            self.translate_btn.setEnabled(False)
+            self.save_md_btn.setEnabled(False)
+            self.save_pdf_btn.setEnabled(False)
             pages = self.pdf_viewer.total_pages
             print(f"[YanFu] PDF loaded successfully: {pages} pages")
             self.status.showMessage(f"Loaded: {Path(file_path).name} ({pages} pages)")
@@ -737,10 +866,69 @@ class YanFuMainWindow(QMainWindow):
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to load PDF:\n{str(e)}")
 
-    def _translate_current(self):
-        """Translate the currently loaded PDF."""
+    def _parse_current(self):
+        """Parse the currently loaded PDF in background thread."""
         if not self._current_pdf_path:
             QMessageBox.warning(self, "No PDF", "Please open a PDF first.")
+            return
+
+        print("\n" + "=" * 60)
+        print("[YanFu] Starting PDF parsing...")
+        print(f"[YanFu] Input: {self._current_pdf_path}")
+        print("=" * 60)
+
+        output_dir = str(Path(self._current_pdf_path).parent)
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.parse_btn.setEnabled(False)
+        self.translate_btn.setEnabled(False)
+        self.status.showMessage("Parsing PDF...")
+
+        self._parse_worker = ParseWorker(
+            file_path=self._current_pdf_path,
+            output_dir=output_dir,
+            use_ocr=self.config.get("use_ocr", False),
+            parse_engine="auto",
+        )
+        self._parse_worker.signals.started.connect(self._on_parse_started)
+        self._parse_worker.signals.progress.connect(self._on_parse_progress)
+        self._parse_worker.signals.finished.connect(self._on_parse_finished)
+        self._parse_worker.signals.error.connect(self._on_parse_error)
+        self._parse_worker.start()
+
+    def _on_parse_started(self, file_path: str):
+        print(f"[YanFu] Parse worker started: {Path(file_path).name}")
+
+    def _on_parse_progress(self, message: str, current: int, total: int):
+        self.progress_bar.setValue(current)
+        self.status.showMessage(message)
+
+    def _on_parse_finished(self, result: ParseResult):
+        print(f"\n[YanFu] ✅ Parsing completed!")
+        print(f"[YanFu] Pages: {result.page_count}")
+        print(f"[YanFu] Images: {len(result.images)}")
+        print(f"[YanFu] Engine: {result.engine}")
+        print(f"[YanFu] Markdown: {len(result.markdown)} chars")
+
+        self._parsed_markdown = result.markdown
+        self.md_editor.setPlainText(result.markdown)
+        self.translate_btn.setEnabled(True)
+        self.parse_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status.showMessage(f"Parsed: {result.page_count} pages, {len(result.images)} images")
+
+    def _on_parse_error(self, error: str):
+        print(f"\n[YanFu] ❌ Parse error: {error}")
+        QMessageBox.critical(self, "Parse Error", error)
+        self.parse_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status.showMessage("Parse failed")
+
+    def _translate_current(self):
+        """Translate the parsed markdown in background thread."""
+        if not self._parsed_markdown:
+            QMessageBox.warning(self, "Not Parsed", "Please parse the PDF first.")
             return
 
         if not self.config.is_configured():
@@ -756,66 +944,63 @@ class YanFuMainWindow(QMainWindow):
         print("=" * 60)
 
         output_dir = str(Path(self._current_pdf_path).parent)
-        task = TranslationTask(
-            file_path=self._current_pdf_path,
-            target_lang=self.config.get("target_lang", "en"),
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.translate_btn.setEnabled(False)
+        self.parse_btn.setEnabled(False)
+        self.status.showMessage("Translating...")
+
+        self._translate_worker = TranslateWorker(
+            markdown=self._parsed_markdown,
             source_lang=self.config.get("source_lang", "auto"),
-            use_ocr=self.config.get("use_ocr", False),
-            temperature=self.config.get("temperature", 0.3),
+            target_lang=self.config.get("target_lang", "en"),
+            config=self.config,
+            output_dir=output_dir,
+            file_path=self._current_pdf_path,
             page_size=self.config.get("page_size", "A4"),
             font_size=self.config.get("font_size", 11),
             margin=self.config.get("margin", 20.0),
-            config=self.config,
+            temperature=self.config.get("temperature", 0.3),
         )
+        self._translate_worker.signals.started.connect(self._on_translate_started)
+        self._translate_worker.signals.progress.connect(self._on_translate_progress)
+        self._translate_worker.signals.finished.connect(self._on_translate_finished)
+        self._translate_worker.signals.error.connect(self._on_translate_error)
+        self._translate_worker.start()
 
-        self.status.showMessage("Translating...")
-        self.translate_btn.setEnabled(False)
+    def _on_translate_started(self, file_path: str):
+        print(f"[YanFu] Translate worker started: {Path(file_path).name}")
 
-        try:
-            print(f"\n[YanFu] Creating DocumentProcessor...")
-            processor = DocumentProcessor(
-                output_dir=output_dir,
-                target_lang=task.target_lang,
-                source_lang=task.source_lang,
-                use_ocr=task.use_ocr,
-                parse_engine=task.parse_engine,
-                temperature=task.temperature,
-                page_size=task.page_size,
-                font_size=task.font_size,
-                margin=task.margin,
-                config=task.config,
-                verbose=True,  # Enable verbose logging to terminal
-            )
+    def _on_translate_progress(self, message: str, current: int, total: int):
+        if total > 0:
+            self.progress_bar.setValue(int((current / total) * 100))
+        self.status.showMessage(message)
 
-            print(f"[YanFu] Processing document...")
-            result = processor.process(self._current_pdf_path)
+    def _on_translate_finished(self, translated_md: str, output_md: str, output_pdf: str):
+        print(f"\n[YanFu] ✅ Translation completed successfully!")
+        print(f"[YanFu] Markdown: {output_md}")
+        print(f"[YanFu] PDF: {output_pdf}")
 
-            if result.success:
-                self._current_md_path = result.output_md
-                self._current_md_content = result.markdown
-                self.md_editor.setPlainText(result.markdown)
-                self.save_md_btn.setEnabled(True)
-                self.save_pdf_btn.setEnabled(True)
-                print(f"\n[YanFu] ✅ Translation completed successfully!")
-                print(f"[YanFu] Markdown: {result.output_md}")
-                print(f"[YanFu] PDF: {result.output_pdf}")
-                print(f"[YanFu] Pages: {result.page_count}")
-                print(f"[YanFu] Time: {result.total_time:.1f}s")
-                self.status.showMessage(f"Translation completed: {result.output_pdf}")
-            else:
-                print(f"\n[YanFu] ❌ Translation failed: {result.error}")
-                QMessageBox.critical(self, "Translation Error", result.error)
-                self.status.showMessage("Translation failed")
+        self._current_md_path = output_md
+        self._current_md_content = translated_md
+        self.md_editor.setPlainText(translated_md)
+        self.save_md_btn.setEnabled(True)
+        self.save_pdf_btn.setEnabled(True)
+        self.translate_btn.setEnabled(True)
+        self.parse_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status.showMessage(f"Translation completed: {output_pdf}")
+        print("=" * 60)
 
-        except Exception as e:
-            print(f"\n[YanFu] ❌ ERROR during translation: {e}")
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "Error", f"Translation failed:\n{str(e)}")
-            self.status.showMessage("Translation failed")
-        finally:
-            self.translate_btn.setEnabled(True)
-            print("=" * 60)
+    def _on_translate_error(self, error: str):
+        print(f"\n[YanFu] ❌ Translation error: {error}")
+        QMessageBox.critical(self, "Translation Error", error)
+        self.translate_btn.setEnabled(True)
+        self.parse_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status.showMessage("Translation failed")
+        print("=" * 60)
 
     def _save_markdown(self):
         """Save markdown content to file."""
@@ -858,9 +1043,7 @@ class YanFuMainWindow(QMainWindow):
         )
         if file_path:
             try:
-                # Re-render PDF with current markdown
                 content = self.md_editor.toPlainText()
-                from .renderer import render_pdf
                 render_pdf(
                     content,
                     output_path=file_path,
@@ -909,9 +1092,7 @@ class YanFuMainWindow(QMainWindow):
 
 def run_gui():
     """Launch the YanFu GUI application."""
-    import logging
     import os
-    import sys
 
     # Set up detailed logging to terminal
     logging.basicConfig(
@@ -922,7 +1103,6 @@ def run_gui():
             logging.StreamHandler(sys.stdout),
         ],
     )
-    logger = logging.getLogger("yanfu")
     logger.setLevel(logging.DEBUG)
 
     # Suppress MuPDF stderr errors

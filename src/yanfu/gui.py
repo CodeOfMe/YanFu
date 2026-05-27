@@ -258,13 +258,17 @@ class TranslateWorker(QThread):
     def run(self):
         try:
             self.signals.started.emit(self.file_path)
-            logger.debug(f"[TranslateWorker] Starting translation: {self.file_path}")
-
-            # Split markdown into chunks for progress tracking
+            print(f"\n[TranslateWorker] ========================================")
+            print(f"[TranslateWorker] Provider: {self.config.get('provider')}")
+            print(f"[TranslateWorker] Model:    {self.config.get('model')}")
+            print(f"[TranslateWorker] Base URL: {self.config.get('base_url')}")
+            print(f"[TranslateWorker] Source:   {self.source_lang} → {self.target_lang}")
+            
             from .translator import _split_markdown
             chunks = _split_markdown(self.markdown)
             total_chunks = len(chunks)
-            logger.debug(f"[TranslateWorker] Split into {total_chunks} chunks")
+            print(f"[TranslateWorker] Markdown: {len(self.markdown)} chars → {total_chunks} chunks")
+            print(f"[TranslateWorker] ========================================")
 
             translated_chunks = []
             translator = OllamaTranslator(
@@ -278,49 +282,44 @@ class TranslateWorker(QThread):
 
             for i, chunk in enumerate(chunks):
                 if self.is_cancelled():
-                    self.signals.progress.emit("Cancelled", i, total_chunks)
                     return
 
                 if chunk.strip():
+                    print(f"[TranslateWorker] Chunk {i+1}/{total_chunks} ({len(chunk)} chars)...", end=" ", flush=True)
                     self.signals.progress.emit(f"Translating chunk {i+1}/{total_chunks}...", i, total_chunks)
                     translated = translator.translate(chunk, self.source_lang, self.target_lang)
                     translated_chunks.append(translated)
+                    print(f"→ {len(translated)} chars")
                 else:
                     translated_chunks.append(chunk)
 
             if self.is_cancelled():
                 return
 
+            print(f"\n[TranslateWorker] Rendering PDF...")
             self.signals.progress.emit("Rendering PDF...", total_chunks, total_chunks)
 
             translated_markdown = "\n\n".join(translated_chunks)
             translated_markdown = clean_markdown(translated_markdown)
+            print(f"[TranslateWorker] Translated: {len(translated_markdown)} chars")
 
-            # Save Markdown
             stem = Path(self.file_path).stem
             output_md = str(Path(self.output_dir) / f"{stem}_{self.target_lang}.md")
             Path(output_md).write_text(translated_markdown, encoding="utf-8")
-            logger.debug(f"[TranslateWorker] Saved Markdown: {output_md}")
+            print(f"[TranslateWorker] Saved MD: {output_md}")
 
-            # Render PDF
             image_dir = Path(self.output_dir) / f"{stem}_images"
             output_pdf = str(Path(self.output_dir) / f"{stem}_{self.target_lang}.pdf")
-
-            render_pdf(
-                translated_markdown,
-                output_path=output_pdf,
-                image_dir=str(image_dir) if image_dir.exists() else None,
-                page_size=self.page_size,
-                font_size=self.font_size,
-                margin=self.margin,
-            )
-            logger.debug(f"[TranslateWorker] Saved PDF: {output_pdf}")
+            render_pdf(translated_markdown, output_path=output_pdf,
+                       image_dir=str(image_dir) if image_dir.exists() else None,
+                       page_size=self.page_size, font_size=self.font_size, margin=self.margin)
+            print(f"[TranslateWorker] Saved PDF: {output_pdf}")
 
             self.signals.progress.emit("Translation complete", total_chunks, total_chunks)
             self.signals.finished.emit(translated_markdown, output_md, output_pdf)
 
         except Exception as e:
-            logger.error(f"[TranslateWorker] Error: {e}")
+            print(f"\n[TranslateWorker] ❌ FATAL: {e}")
             import traceback
             traceback.print_exc()
             self.signals.error.emit(str(e))
@@ -998,12 +997,10 @@ class YanFuMainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
 
-        # Keep strong references to all threads
+        # Keep strong references to ALL threads to prevent GC
+        self._workers: list = []
         self._parse_worker: ParseWorker | None = None
         self._translate_worker: TranslateWorker | None = None
-        self._dl_worker: _EngineModelDownloader | None = None
-        self._fetch_worker: _ModelFetchWorker | None = None
-        
         self._current_pdf_path: str | None = None
         self._current_md_path: str | None = None
         self._current_md_content: str = ""
@@ -1019,14 +1016,13 @@ class YanFuMainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # Main splitter: Source (left) | Translation (right)
+        # Main splitter: PDF (left) | Markdown Preview (middle) | Translation (right)
         main_splitter = QSplitter(Qt.Horizontal)
 
         # Left panel: PDF Viewer
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
-
         left_header = QHBoxLayout()
         left_header.addWidget(QLabel("📄 Original Document"))
         left_header.addStretch()
@@ -1034,49 +1030,52 @@ class YanFuMainWindow(QMainWindow):
         self.open_pdf_btn.clicked.connect(self._open_pdf)
         left_header.addWidget(self.open_pdf_btn)
         left_layout.addLayout(left_header)
-
         self.pdf_viewer = PDFViewerWidget()
         left_layout.addWidget(self.pdf_viewer)
-
         main_splitter.addWidget(left_widget)
 
-        # Right panel: Translation
+        # Middle panel: Parsed Markdown preview
+        mid_widget = QWidget()
+        mid_layout = QVBoxLayout(mid_widget)
+        mid_layout.setContentsMargins(0, 0, 0, 0)
+        mid_header = QHBoxLayout()
+        mid_header.addWidget(QLabel("📝 Parsed Markdown"))
+        mid_header.addStretch()
+        right_layout2 = QVBoxLayout()  # placeholder, will be defined properly
+        
+        mid_layout.addLayout(mid_header)
+        self.md_preview = QTextEdit()
+        self.md_preview.setReadOnly(True)
+        self.md_preview.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
+        self.md_preview.setPlaceholderText("Parsed markdown will appear here...")
+        mid_layout.addWidget(self.md_preview)
+        main_splitter.addWidget(mid_widget)
+
+        # Right panel: Translation output
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-
         right_header = QHBoxLayout()
         right_header.addWidget(QLabel("🌐 Translation"))
         right_header.addStretch()
-
         self.sync_scroll_check = QCheckBox("Sync Scroll")
         self.sync_scroll_check.setChecked(True)
         self.sync_scroll_check.toggled.connect(self._on_sync_scroll_toggled)
         right_header.addWidget(self.sync_scroll_check)
-
-        self.parse_btn = QPushButton("📄 Parse PDF")
-        self.parse_btn.clicked.connect(self._parse_current)
-        self.parse_btn.setEnabled(False)
-        right_header.addWidget(self.parse_btn)
-
         self.translate_btn = QPushButton("▶ Translate")
         self.translate_btn.clicked.connect(self._translate_current)
         self.translate_btn.setEnabled(False)
         right_header.addWidget(self.translate_btn)
-
         self.save_md_btn = QPushButton("💾 Save MD")
         self.save_md_btn.clicked.connect(self._save_markdown)
         self.save_md_btn.setEnabled(False)
         right_header.addWidget(self.save_md_btn)
-
         self.save_pdf_btn = QPushButton("💾 Save PDF")
         self.save_pdf_btn.clicked.connect(self._save_translated_pdf)
         self.save_pdf_btn.setEnabled(False)
         right_header.addWidget(self.save_pdf_btn)
-
         right_layout.addLayout(right_header)
 
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
@@ -1086,12 +1085,9 @@ class YanFuMainWindow(QMainWindow):
         self.md_editor.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 11))
         self.md_editor.setPlaceholderText("Translation will appear here...")
         right_layout.addWidget(self.md_editor)
-
         main_splitter.addWidget(right_widget)
 
-        # Set initial splitter sizes (50/50)
-        main_splitter.setSizes([600, 600])
-
+        main_splitter.setSizes([400, 400, 400])
         main_layout.addWidget(main_splitter)
 
         # Status bar
@@ -1302,25 +1298,23 @@ class YanFuMainWindow(QMainWindow):
             parse_engine=self.config.get("parse_engine", "pymupdf"),
             device=self.config.get("device", "auto"),
         )
-        self._parse_worker.signals.started.connect(lambda fp: print(f"[YanFu] Parsing: {Path(fp).name}"))
-        self._parse_worker.signals.progress.connect(lambda m, c, t: self.status.showMessage(m))
+        self._workers.append(self._parse_worker)
         self._parse_worker.signals.finished.connect(self._on_parse_then_translate)
         self._parse_worker.signals.error.connect(self._on_parse_error)
-        self._parse_worker.finished.connect(self._parse_worker.deleteLater)
+        self._parse_worker.finished.connect(lambda: self._workers.remove(self._parse_worker) if self._parse_worker in self._workers else None)
         self._parse_worker.start()
 
     def _on_parse_then_translate(self, result: ParseResult):
         """After parsing, start translation."""
-        print(f"\n[YanFu] ✅ Parsed with {result.engine}: {result.page_count} pages, {len(result.images)} images, {len(result.markdown)} chars")
-        
+        print(f"\n[YanFu] ✅ Parsed: {result.engine}, {result.page_count}p, {len(result.images)}img, {len(result.markdown)} chars")
         self._parsed_markdown = result.markdown
+        self.md_preview.setPlainText(result.markdown)  # Show in preview
+        
         if not self._parsed_markdown.strip():
             QMessageBox.warning(self, "No Text", "PDF has no extractable text. It may be fully image-based.")
             self.translate_btn.setEnabled(True)
             self.progress_bar.setVisible(False)
             return
-
-        # Now translate
         self._do_translate()
 
     def _do_translate(self):
@@ -1353,11 +1347,11 @@ class YanFuMainWindow(QMainWindow):
             margin=self.config.get("margin", 20.0),
             temperature=self.config.get("temperature", 0.3),
         )
-        self._translate_worker.signals.started.connect(self._on_translate_started)
+        self._workers.append(self._translate_worker)
         self._translate_worker.signals.progress.connect(self._on_translate_progress)
         self._translate_worker.signals.finished.connect(self._on_translate_finished)
         self._translate_worker.signals.error.connect(self._on_translate_error)
-        self._translate_worker.finished.connect(self._translate_worker.deleteLater)  # Clean up
+        self._translate_worker.finished.connect(lambda: self._workers.remove(self._translate_worker) if self._translate_worker in self._workers else None)
         self._translate_worker.start()
 
         output_dir = str(Path(self._current_pdf_path).parent)

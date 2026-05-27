@@ -487,11 +487,16 @@ class PDFParser:
         from PIL import Image
         import io
 
-        langs = [l.strip() for l in self.langs.split(",") if l.strip()]
-        if not langs:
-            langs = ["en"]
+        # Map language codes to easyocr format
+        lang_map = {
+            "zh": "ch_sim", "zh-Hant": "ch_tra", "en": "en", "ja": "ja",
+            "ko": "ko", "fr": "fr", "de": "de", "es": "es", "ru": "ru",
+            "ar": "ar", "hi": "hi", "th": "th", "vi": "vi",
+        }
+        raw_langs = [l.strip() for l in self.langs.split(",") if l.strip()]
+        langs = [lang_map.get(l, "en") for l in raw_langs] if raw_langs else ["en"]
+        logger.debug(f"EasyOCR langs: {langs} (from: {self.langs})")
         reader = easyocr.Reader(langs)
-        logger.debug(f"EasyOCR reader loaded with languages: {langs}")
 
         doc = fitz.open(pdf_path)
         markdown_parts = []

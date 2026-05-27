@@ -378,14 +378,15 @@ def translate_markdown(
     return "\n\n".join(translated_chunks)
 
 
-def _split_markdown(markdown: str, max_chunk_size: int = 2000) -> list[str]:
-    """Split Markdown into translatable chunks.
+def _split_markdown(markdown: str, max_chunk_size: int = 800) -> list[str]:
+    """Split Markdown into translatable chunks for small models.
 
     Preserves code blocks, formulas, and image references.
+    Smaller chunks work better with 0.6B-1.8B models.
 
     Args:
         markdown: Markdown text.
-        max_chunk_size: Maximum chunk size in characters.
+        max_chunk_size: Maximum chunk size in characters (default 800 for small models).
 
     Returns:
         List of markdown chunks.

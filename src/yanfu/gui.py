@@ -1230,6 +1230,11 @@ class YanFuMainWindow(QMainWindow):
         self.translate_btn.setEnabled(False)
         self.status.showMessage("Parsing PDF...")
 
+        # Wait for any previous worker
+        if self._parse_worker and self._parse_worker.isRunning():
+            self._parse_worker.quit()
+            self._parse_worker.wait(1000)
+
         self._parse_worker = ParseWorker(
             file_path=self._current_pdf_path,
             output_dir=output_dir,
@@ -1241,6 +1246,7 @@ class YanFuMainWindow(QMainWindow):
         self._parse_worker.signals.progress.connect(lambda m, c, t: self.status.showMessage(m))
         self._parse_worker.signals.finished.connect(self._on_parse_then_translate)
         self._parse_worker.signals.error.connect(self._on_parse_error)
+        self._parse_worker.finished.connect(self._parse_worker.deleteLater)
         self._parse_worker.start()
 
     def _on_parse_then_translate(self, result: ParseResult):
@@ -1270,6 +1276,11 @@ class YanFuMainWindow(QMainWindow):
         self.translate_btn.setEnabled(False)
         self.status.showMessage("Translating...")
 
+        # Wait for any previous worker to finish
+        if self._translate_worker and self._translate_worker.isRunning():
+            self._translate_worker.quit()
+            self._translate_worker.wait(1000)
+
         self._translate_worker = TranslateWorker(
             markdown=self._parsed_markdown,
             source_lang=self.config.get("source_lang", "auto"),
@@ -1286,6 +1297,7 @@ class YanFuMainWindow(QMainWindow):
         self._translate_worker.signals.progress.connect(self._on_translate_progress)
         self._translate_worker.signals.finished.connect(self._on_translate_finished)
         self._translate_worker.signals.error.connect(self._on_translate_error)
+        self._translate_worker.finished.connect(self._translate_worker.deleteLater)  # Clean up
         self._translate_worker.start()
 
         output_dir = str(Path(self._current_pdf_path).parent)

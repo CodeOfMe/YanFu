@@ -388,7 +388,7 @@ class PDFParser:
         }
 
     def _parse_with_docling(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
-        """Parse PDF using Docling."""
+        """Parse PDF using Docling with formula + table support."""
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as e:
@@ -396,8 +396,6 @@ class PDFParser:
 
         logger.debug(f"Parsing PDF with Docling: {pdf_path}")
 
-        # Simple converter — handles tables well, formulas as <!-- formula-not-decoded -->
-        # which clean_markdown replaces with [Formula]
         converter = DocumentConverter()
         result = converter.convert(pdf_path)
 

@@ -176,7 +176,7 @@ class PDFParser:
         return "cpu"
 
     def parse(self, pdf_path: str, output_dir: str | None = None) -> dict[str, Any]:
-        """Parse PDF to Markdown.
+        """Parse PDF to Markdown, falling back to pymupdf on error.
 
         Args:
             pdf_path: Path to PDF file.
@@ -192,7 +192,21 @@ class PDFParser:
             self.engine = self._select_engine(pdf_path)
             logger.debug(f"Selected engine: {self.engine}")
 
-        # Route to appropriate parser
+        # Try the selected engine, fall back to pymupdf on error
+        try:
+            return self._try_parse(pdf_path, output_dir)
+        except Exception as e:
+            logger.warning(f"Engine '{self.engine}' failed: {e}. Falling back to pymupdf...")
+            if self.engine != "pymupdf":
+                old_engine = self.engine
+                self.engine = "pymupdf"
+                result = self._try_parse(pdf_path, output_dir)
+                result["original_engine"] = old_engine
+                return result
+            raise
+
+    def _try_parse(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
+        """Parse with the currently selected engine."""
         parsers = {
             "pymupdf": self._parse_with_pymupdf,
             "pdfplumber": self._parse_with_pdfplumber,
@@ -218,14 +232,16 @@ class PDFParser:
     def _select_engine(self, pdf_path: str) -> str:
         """Select best parsing engine based on availability.
 
-        Priority: marker > docling > mineru > easyocr > doctr > surya-lite > pymupdf > pdfplumber
+        Priority: pymupdf (always works) > marker > docling > pdfplumber
+        Falls back gracefully when engines are unavailable.
         """
-        priority = ["marker", "docling", "mineru", "easyocr", "doctr", "surya-lite", "pymupdf", "pdfplumber"]
+        priority = ["pymupdf", "marker", "docling", "easyocr", "doctr", "pdfplumber"]
         for eng in priority:
-            available, _ = self._check_engine_available(eng)
+            available, reason = self._check_engine_available(eng)
             if available:
                 return eng
-        return "pymupdf"  # Fallback
+            logger.debug(f"Engine '{eng}' skipped: {reason}")
+        return "pymupdf"  # Ultimate fallback
 
     def _parse_with_pymupdf(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
         """Parse PDF using PyMuPDF."""

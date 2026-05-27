@@ -515,33 +515,34 @@ class ModelDownloadWorker(QThread):
         enable_progress_bars()
 
     def _download_marker_models(self):
-        """Download marker-pdf models with progress tracking."""
-        print("\n" + "=" * 60)
-        print("[YanFu] Downloading marker-pdf models (~3GB)...")
-        print("=" * 60)
+        """Download marker-pdf models from ModelScope (mainland China compatible)."""
+        from .model_download import download_surya_via_marker, download_surya_from_modelscope
 
-        self.signals.progress.emit("Initializing marker-pdf...", 0, 100)
-        self._patch_tqdm()
+        self.signals.progress.emit("Trying ModelScope mirror...", 0, 100)
 
-        try:
-            from marker.models import create_model_dict
+        # Try ModelScope first for mainland China users
+        success, msg = download_surya_from_modelscope(
+            progress_callback=lambda cur, tot, msg: self.signals.progress.emit(msg, int(cur * 100 / tot), 100)
+        )
 
-            print("[YanFu] Loading models (downloads show below)...")
-            print("-" * 60)
-
-            artifact_dict = create_model_dict()
-
-            print("-" * 60)
-            print("[YanFu] ✅ All marker models loaded!")
-            print("=" * 60)
-
+        if success:
             self.signals.progress.emit("Models loaded", 100, 100)
-            self.signals.finished.emit("Marker models loaded successfully")
-        except Exception as e:
-            print(f"\n[YanFu] ❌ Marker download failed: {e}")
-            import traceback
-            traceback.print_exc()
-            self.signals.error.emit(f"Marker download failed: {str(e)}")
+            self.signals.finished.emit("Marker models loaded from ModelScope")
+            return
+
+        # Fallback: try direct download
+        print("[YanFu] ModelScope download incomplete, trying direct download...")
+        self.signals.progress.emit("Fallback: direct download...", 30, 100)
+
+        success, msg = download_surya_via_marker(
+            progress_callback=lambda cur, tot, msg: self.signals.progress.emit(msg, cur, 100)
+        )
+
+        if success:
+            self.signals.progress.emit("Models loaded", 100, 100)
+            self.signals.finished.emit(msg)
+        else:
+            self.signals.error.emit(f"Download failed: {msg}")
 
     def _download_docling_models(self):
         """Download Docling models."""
@@ -617,6 +618,28 @@ class ModelDownloadWorker(QThread):
 # Settings dialog
 # ---------------------------------------------------------------------------
 
+class _ModelFetchWorker(QThread):
+    """Background thread for fetching Ollama/OpenAI models."""
+
+    class _Signals(QObject):
+        finished = Signal(list, str)  # models, current_model
+
+    def __init__(self, provider: str, base_url: str, api_key: str, current_model: str):
+        super().__init__()
+        self._provider = provider
+        self._base_url = base_url
+        self._api_key = api_key
+        self._current_model = current_model
+        self.signals = self._Signals()
+
+    def run(self):
+        try:
+            models = ModelFetcher.get_models(self._provider, self._base_url, self._api_key)
+        except Exception:
+            models = []
+        self.signals.finished.emit(models, self._current_model)
+
+
 class SettingsDialog(QDialog):
     """Settings dialog for translation configuration."""
 
@@ -627,6 +650,7 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(500)
         self.setMinimumHeight(700)
         self.config = ConfigManager()
+        self._model_fetch_worker = None
         self._build_ui()
         self._load_settings()
 
@@ -785,19 +809,19 @@ class SettingsDialog(QDialog):
 
         self._on_provider_changed()
         self._update_engine_status()
+        # Trigger async model loading after UI is shown
+        self._refresh_models()
 
     def _on_provider_changed(self):
-        """Update UI based on selected provider."""
+        """Update UI based on selected provider (non-blocking)."""
         provider = self.provider_combo.currentData()
         if provider == "ollama":
             self.base_url_edit.setEnabled(True)
             self.api_key_edit.setEnabled(False)
-            self._refresh_models()
         elif provider == "openai":
             self.base_url_edit.setEnabled(False)
             self.base_url_edit.setText("https://api.openai.com")
             self.api_key_edit.setEnabled(True)
-            self._refresh_models()
         else:
             self.base_url_edit.setEnabled(True)
             self.base_url_edit.clear()
@@ -805,29 +829,42 @@ class SettingsDialog(QDialog):
             self.model_combo.clear()
             self.model_combo.setEditable(True)
             self.model_combo.setEditText("")
+            return  # Don't fetch for custom provider
 
     def _refresh_models(self):
-        """Fetch and populate available models."""
+        """Fetch and populate available models in background thread."""
         provider = self.provider_combo.currentData()
         base_url = self.base_url_edit.text()
         api_key = self.api_key_edit.text()
+        current_model = self.model_combo.currentData() or self.model_combo.currentText()
 
         self.model_combo.clear()
         self.model_combo.addItem("Fetching models...", "")
         self.model_combo.setEnabled(False)
-        QApplication.processEvents()
 
-        models = ModelFetcher.get_models(provider, base_url, api_key)
+        # Run fetch in background thread to avoid UI freeze
+        self._model_fetch_worker = _ModelFetchWorker(provider, base_url, api_key, current_model)
+        self._model_fetch_worker.signals.finished.connect(self._on_models_fetched)
+        self._model_fetch_worker.start()
 
+    def _on_models_fetched(self, models: list[str], current_model: str):
+        """Handle fetched models."""
         self.model_combo.clear()
         if models:
             for m in models:
                 self.model_combo.addItem(m, m)
+            # Restore previously selected model if it's in the list
+            if current_model:
+                idx = self.model_combo.findData(current_model)
+                if idx >= 0:
+                    self.model_combo.setCurrentIndex(idx)
             self.model_combo.setEnabled(True)
         else:
             self.model_combo.addItem("No models found (enter manually)", "")
             self.model_combo.setEditable(True)
             self.model_combo.setEnabled(True)
+            if current_model:
+                self.model_combo.setEditText(current_model)
 
     def _load_settings(self):
         provider = self.config.get("provider", "ollama")

@@ -6,7 +6,6 @@ Supports both PDF and CAJ (Chinese Academic Journal) formats.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -184,8 +183,8 @@ class PDFParser:
         """
         try:
             import pdfplumber
-        except ImportError:
-            raise ImportError("Install pdfplumber: pip install pdfplumber")
+        except ImportError as e:
+            raise ImportError("Install pdfplumber: pip install pdfplumber") from e
 
         parts = []
 
@@ -385,7 +384,7 @@ class MarkerConverter:
     def is_available(cls) -> bool:
         """Check if marker is available."""
         try:
-            from marker.converters.pdf import PdfConverter
+            from marker.converters.pdf import PdfConverter  # noqa: F401
             return True
         except ImportError:
             return False
@@ -398,7 +397,7 @@ class PyMuPDFConverter:
     def is_available() -> bool:
         """Check if PyMuPDF is available."""
         try:
-            import fitz
+            import fitz  # noqa: F401
             return True
         except ImportError:
             return False
@@ -411,7 +410,7 @@ class PDFPlumberConverter:
     def is_available() -> bool:
         """Check if pdfplumber is available."""
         try:
-            import pdfplumber
+            import pdfplumber  # noqa: F401
             return True
         except ImportError:
             return False

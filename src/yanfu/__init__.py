@@ -6,3 +6,12 @@ PDF files with preserved layout, images, and formulas.
 """
 
 __version__ = "0.1.0"
+
+from .api import ToolResult, yanfu_translate_file, yanfu_translate_files
+
+__all__ = [
+    "__version__",
+    "ToolResult",
+    "yanfu_translate_file",
+    "yanfu_translate_files",
+]

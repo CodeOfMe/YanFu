@@ -5,16 +5,14 @@ Orchestrates document parsing, translation, and PDF generation.
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from .parser import parse_document
 from .renderer import render_pdf
 from .translator import translate_markdown
-from .utils import clean_markdown, get_output_path
+from .utils import clean_markdown
 
 
 @dataclass
@@ -48,7 +46,7 @@ class ProcessingResult:
 class DocumentProcessor:
     """Process documents through parse-translate-render pipeline.
 
-    Handles PDF and CAJ files, translates using local LLMs,
+    Handles PDF and CAJ files, translates using local GGUF models,
     and generates layout-preserving PDF output.
     """
 
@@ -59,16 +57,14 @@ class DocumentProcessor:
         source_lang: str = "auto",
         model_name: str = "gemma3:1b",
         model_path: str | None = None,
-        use_ollama: bool = False,
-        ollama_url: str = "http://localhost:11434",
         use_ocr: bool = False,
         parse_engine: str = "auto",
-        device: str = "auto",
         temperature: float = 0.3,
         page_size: str = "A4",
         font_name: str | None = None,
         font_size: int = 11,
         margin: float = 20.0,
+        cache_dir: str | None = None,
         verbose: bool = False,
     ):
         """Initialize document processor.
@@ -78,17 +74,15 @@ class DocumentProcessor:
             target_lang: Target language code.
             source_lang: Source language code.
             model_name: Translation model name.
-            model_path: Local model path.
-            use_ollama: Use Ollama instead of ModelScope.
-            ollama_url: Ollama API URL.
-            use_ocr: Use OCR for parsing.
+            model_path: Direct path to GGUF model file.
+            use_ocr: Use OCR for scanning.
             parse_engine: Parsing engine.
-            device: Compute device.
             temperature: Translation temperature.
             page_size: Output PDF page size.
             font_name: Output PDF font.
             font_size: Output PDF font size.
             margin: Output PDF margin.
+            cache_dir: Model cache directory.
             verbose: Enable verbose output.
         """
         self.output_dir = output_dir
@@ -96,16 +90,14 @@ class DocumentProcessor:
         self.source_lang = source_lang
         self.model_name = model_name
         self.model_path = model_path
-        self.use_ollama = use_ollama
-        self.ollama_url = ollama_url
         self.use_ocr = use_ocr
         self.parse_engine = parse_engine
-        self.device = device
         self.temperature = temperature
         self.page_size = page_size
         self.font_name = font_name
         self.font_size = font_size
         self.margin = margin
+        self.cache_dir = cache_dir
         self.verbose = verbose
 
     def process(self, file_path: str) -> ProcessingResult:
@@ -169,10 +161,8 @@ class DocumentProcessor:
                 target_lang=self.target_lang,
                 model_name=self.model_name,
                 model_path=self.model_path,
-                use_ollama=self.use_ollama,
-                ollama_url=self.ollama_url,
-                device=self.device,
                 temperature=self.temperature,
+                cache_dir=self.cache_dir,
             )
 
             translation_time = time.time() - translation_start
@@ -270,16 +260,14 @@ def process_document(
     source_lang: str = "auto",
     model_name: str = "gemma3:1b",
     model_path: str | None = None,
-    use_ollama: bool = False,
-    ollama_url: str = "http://localhost:11434",
     use_ocr: bool = False,
     parse_engine: str = "auto",
-    device: str = "auto",
     temperature: float = 0.3,
     page_size: str = "A4",
     font_name: str | None = None,
     font_size: int = 11,
     margin: float = 20.0,
+    cache_dir: str | None = None,
     verbose: bool = False,
 ) -> ProcessingResult:
     """Process a document file through the full pipeline.
@@ -290,17 +278,15 @@ def process_document(
         target_lang: Target language code.
         source_lang: Source language code.
         model_name: Translation model name.
-        model_path: Local model path.
-        use_ollama: Use Ollama instead of ModelScope.
-        ollama_url: Ollama API URL.
-        use_ocr: Use OCR for parsing.
+        model_path: Direct path to GGUF model file.
+        use_ocr: Use OCR for scanning.
         parse_engine: Parsing engine.
-        device: Compute device.
         temperature: Translation temperature.
         page_size: Output PDF page size.
         font_name: Output PDF font.
         font_size: Output PDF font size.
         margin: Output PDF margin.
+        cache_dir: Model cache directory.
         verbose: Enable verbose output.
 
     Returns:
@@ -312,16 +298,14 @@ def process_document(
         source_lang=source_lang,
         model_name=model_name,
         model_path=model_path,
-        use_ollama=use_ollama,
-        ollama_url=ollama_url,
         use_ocr=use_ocr,
         parse_engine=parse_engine,
-        device=device,
         temperature=temperature,
         page_size=page_size,
         font_name=font_name,
         font_size=font_size,
         margin=margin,
+        cache_dir=cache_dir,
         verbose=verbose,
     )
 

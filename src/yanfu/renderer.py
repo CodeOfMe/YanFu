@@ -8,24 +8,21 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch, mm
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Image,
-    PageBreak,
-    Table,
-    TableStyle,
-    KeepTogether,
-)
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    Image,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 
 class PDFRenderer:
@@ -174,7 +171,7 @@ class PDFRenderer:
         if self._styles is not None:
             return self._styles
 
-        base_style = getSampleStyleSheet()
+        getSampleStyleSheet()  # Ensure default styles are loaded
 
         font_name = self._font_name
 

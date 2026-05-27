@@ -1,7 +1,8 @@
-"""YanFu - Local LLM translation using ModelScope models.
+"""YanFu - Local LLM translation using GGUF models.
 
-Handles translation of Markdown text using models from ModelScope
-such as gemma3:1b and qwen3:0.6b.
+Handles translation of Markdown text using GGUF-format models
+downloaded automatically from ModelScope on first run.
+No Ollama or external service configuration needed.
 """
 
 from __future__ import annotations
@@ -9,93 +10,282 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
 
-from .utils import LANGUAGE_MAP, MODELSCOPE_MODELS, TRANSLATION_PROMPT_TEMPLATE
+from .utils import LANGUAGE_MAP, TRANSLATION_PROMPT_TEMPLATE
+
+# Model definitions with GGUF download sources
+MODEL_DEFINITIONS = {
+    "gemma3:1b": {
+        "name": "Google Gemma 3 1B",
+        "gguf_repo": "bartowski/gemma-3-1b-it-GGUF",
+        "gguf_file": "gemma-3-1b-it-Q4_K_M.gguf",
+        "size_mb": 780,
+        "quality": "Good balance of speed and quality",
+    },
+    "qwen3:0.6b": {
+        "name": "Alibaba Qwen 3 0.6B",
+        "gguf_repo": "Qwen/Qwen3-0.6B-GGUF",
+        "gguf_file": "qwen3-0.6b-q4_k_m.gguf",
+        "size_mb": 420,
+        "quality": "Fastest, lower quality",
+    },
+    "qwen3:1.8b": {
+        "name": "Alibaba Qwen 3 1.8B",
+        "gguf_repo": "Qwen/Qwen3-1.8B-GGUF",
+        "gguf_file": "qwen3-1.8b-q4_k_m.gguf",
+        "size_mb": 1100,
+        "quality": "Better quality, slower",
+    },
+}
+
+# Default model cache directory
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "yanfu" / "models"
 
 
-class ModelScopeTranslator:
-    """Translate text using ModelScope local LLMs.
+class ModelManager:
+    """Manage GGUF model downloads and caching.
 
-    Supports models like gemma3:1b and qwen3:0.6b downloaded from ModelScope.
+    Automatically downloads models from HuggingFace/ModelScope on first use.
+    """
+
+    def __init__(self, cache_dir: str | Path | None = None):
+        """Initialize model manager.
+
+        Args:
+            cache_dir: Directory to store downloaded models.
+        """
+        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def get_model_path(self, model_name: str) -> Path | None:
+        """Get the local path for a model.
+
+        Args:
+            model_name: Model identifier.
+
+        Returns:
+            Path to GGUF file or None if not downloaded.
+        """
+        model_def = MODEL_DEFINITIONS.get(model_name)
+        if not model_def:
+            return None
+
+        gguf_file = model_def["gguf_file"]
+        model_path = self.cache_dir / model_name / gguf_file
+
+        if model_path.exists():
+            return model_path
+        return None
+
+    def is_model_downloaded(self, model_name: str) -> bool:
+        """Check if a model is already downloaded.
+
+        Args:
+            model_name: Model identifier.
+
+        Returns:
+            True if model exists locally.
+        """
+        return self.get_model_path(model_name) is not None
+
+    def download_model(self, model_name: str, force: bool = False) -> Path:
+        """Download a model from HuggingFace/ModelScope.
+
+        Args:
+            model_name: Model identifier.
+            force: Force re-download even if exists.
+
+        Returns:
+            Path to downloaded GGUF file.
+        """
+        model_def = MODEL_DEFINITIONS.get(model_name)
+        if not model_def:
+            raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_DEFINITIONS.keys())}")
+
+        model_dir = self.cache_dir / model_name
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        gguf_file = model_def["gguf_file"]
+        model_path = model_dir / gguf_file
+
+        if model_path.exists() and not force:
+            print(f"[YanFu] Model already exists: {model_path}")
+            return model_path
+
+        print(f"[YanFu] Downloading {model_def['name']} ({model_def['size_mb']}MB)...")
+        print(f"[YanFu] Source: {model_def['gguf_repo']}/{gguf_file}")
+
+        # Try HuggingFace first, then ModelScope
+        try:
+            self._download_from_huggingface(model_def, model_dir)
+        except Exception as hf_error:
+            print(f"[YanFu] HuggingFace download failed: {hf_error}")
+            print("[YanFu] Trying ModelScope...")
+            try:
+                self._download_from_modelscope(model_def, model_dir)
+            except Exception as ms_error:
+                raise RuntimeError(
+                    f"Failed to download model from both sources.\n"
+                    f"HuggingFace: {hf_error}\n"
+                    f"ModelScope: {ms_error}"
+                ) from ms_error
+
+        if not model_path.exists():
+            raise RuntimeError(f"Model file not found after download: {model_path}")
+
+        print(f"[YanFu] Model downloaded successfully: {model_path}")
+        return model_path
+
+    def _download_from_huggingface(self, model_def: dict, model_dir: Path):
+        """Download model from HuggingFace.
+
+        Args:
+            model_def: Model definition dictionary.
+            model_dir: Target directory.
+        """
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(
+            repo_id=model_def["gguf_repo"],
+            filename=model_def["gguf_file"],
+            local_dir=str(model_dir),
+            local_dir_use_symlinks=False,
+        )
+
+    def _download_from_modelscope(self, model_def: dict, model_dir: Path):
+        """Download model from ModelScope.
+
+        Args:
+            model_def: Model definition dictionary.
+            model_dir: Target directory.
+        """
+        from modelscope.hub.snapshot_download import snapshot_download
+
+        # ModelScope uses original model repos, not GGUF repos
+        # We need to map GGUF repos to ModelScope equivalents
+        gguf_repo = model_def["gguf_repo"]
+        if "bartowski" in gguf_repo:
+            # Map bartowski GGUF to ModelScope equivalent
+            ms_repo = gguf_repo.replace("bartowski/", "")
+        else:
+            ms_repo = gguf_repo
+
+        snapshot_download(
+            model_id=ms_repo,
+            cache_dir=str(model_dir),
+            allow_patterns=[model_def["gguf_file"]],
+        )
+
+    def list_downloaded_models(self) -> list[str]:
+        """List all downloaded models.
+
+        Returns:
+            List of model names.
+        """
+        downloaded = []
+        for model_name in MODEL_DEFINITIONS:
+            if self.is_model_downloaded(model_name):
+                downloaded.append(model_name)
+        return downloaded
+
+    def get_model_size(self, model_name: str) -> int:
+        """Get the size of a downloaded model in bytes.
+
+        Args:
+            model_name: Model identifier.
+
+        Returns:
+            File size in bytes, or 0 if not downloaded.
+        """
+        model_path = self.get_model_path(model_name)
+        if model_path:
+            return model_path.stat().st_size
+        return 0
+
+    def cleanup(self, model_name: str | None = None):
+        """Remove downloaded models to free disk space.
+
+        Args:
+            model_name: Specific model to remove, or None for all.
+        """
+        if model_name:
+            model_dir = self.cache_dir / model_name
+            if model_dir.exists():
+                import shutil
+                shutil.rmtree(model_dir)
+                print(f"[YanFu] Removed model: {model_name}")
+        else:
+            if self.cache_dir.exists():
+                import shutil
+                shutil.rmtree(self.cache_dir)
+                print(f"[YanFu] Removed all models from {self.cache_dir}")
+
+
+class GGUFTranslator:
+    """Translate text using GGUF models via llama-cpp-python.
+
+    Zero-configuration: models are auto-downloaded on first use.
     """
 
     def __init__(
         self,
         model_name: str = "gemma3:1b",
-        model_path: str | None = None,
-        device: str = "auto",
-        max_length: int = 4096,
+        model_path: str | Path | None = None,
+        n_ctx: int = 4096,
+        n_threads: int = -1,
         temperature: float = 0.3,
+        cache_dir: str | Path | None = None,
     ):
         """Initialize translator.
 
         Args:
-            model_name: Model identifier (gemma3:1b, qwen3:0.6b, etc.).
-            model_path: Local path to model (optional, downloads if not provided).
-            device: Compute device (auto, cuda, cpu).
-            max_length: Maximum generation length.
+            model_name: Model identifier.
+            model_path: Direct path to GGUF file (optional).
+            n_ctx: Context window size.
+            n_threads: Number of CPU threads (-1 = auto).
             temperature: Generation temperature.
+            cache_dir: Model cache directory.
         """
         self.model_name = model_name
         self.model_path = model_path
-        self.device = self._select_device(device)
-        self.max_length = max_length
+        self.n_ctx = n_ctx
+        self.n_threads = n_threads if n_threads > 0 else os.cpu_count() or 4
         self.temperature = temperature
+        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
         self._model = None
-        self._tokenizer = None
+        self._model_manager = ModelManager(self.cache_dir)
 
-    def _select_device(self, device: str) -> str:
-        """Select compute device.
-
-        Args:
-            device: Device preference.
-
-        Returns:
-            Selected device.
-        """
-        if device == "auto":
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    return "cuda"
-            except ImportError:
-                pass
-            return "cpu"
-        return device
-
-    def _load_model(self):
-        """Load model and tokenizer from ModelScope."""
+    def _ensure_model(self):
+        """Ensure model is downloaded and loaded."""
         if self._model is not None:
             return
 
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        # Get model path
+        if self.model_path:
+            gguf_path = Path(self.model_path)
+        else:
+            gguf_path = self._model_manager.get_model_path(self.model_name)
+            if gguf_path is None:
+                print("[YanFu] Model not found locally, downloading...")
+                gguf_path = self._model_manager.download_model(self.model_name)
 
-        model_id = self.model_path or MODELSCOPE_MODELS.get(self.model_name, self.model_name)
+        if not gguf_path.exists():
+            raise FileNotFoundError(f"GGUF model file not found: {gguf_path}")
 
-        print(f"[Translator] Loading model: {model_id}")
-        print(f"[Translator] Device: {self.device}")
+        print(f"[YanFu] Loading model: {gguf_path}")
 
-        self._tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        # Load model with llama-cpp-python
+        from llama_cpp import Llama
 
-        if self._tokenizer.pad_token is None:
-            self._tokenizer.pad_token = self._tokenizer.eos_token
-
-        torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
-
-        self._model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=torch_dtype,
-            device_map="auto" if self.device == "cuda" else None,
-            trust_remote_code=True,
+        self._model = Llama(
+            model_path=str(gguf_path),
+            n_ctx=self.n_ctx,
+            n_threads=self.n_threads,
+            n_gpu_layers=0,  # CPU only for compatibility
+            verbose=False,
         )
 
-        if self.device == "cpu":
-            self._model = self._model.to(self.device)
-
-        self._model.eval()
-        print(f"[Translator] Model loaded successfully")
+        print("[YanFu] Model loaded successfully")
 
     def translate(self, text: str, source_lang: str = "auto", target_lang: str = "en") -> str:
         """Translate text.
@@ -111,7 +301,7 @@ class ModelScopeTranslator:
         if not text.strip():
             return ""
 
-        self._load_model()
+        self._ensure_model()
 
         source_name = LANGUAGE_MAP.get(source_lang, source_lang)
         target_name = LANGUAGE_MAP.get(target_lang, target_lang)
@@ -124,52 +314,16 @@ class ModelScopeTranslator:
             text=text,
         )
 
-        inputs = self._tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.max_length)
+        response = self._model(
+            prompt,
+            max_tokens=4096,
+            temperature=self.temperature,
+            stop=["\n\n\n", "</s>"],
+            echo=False,
+        )
 
-        if self.device == "cuda":
-            inputs = {k: v.to("cuda") for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = self._model.generate(
-                **inputs,
-                max_new_tokens=self.max_length,
-                temperature=self.temperature,
-                do_sample=self.temperature > 0,
-                pad_token_id=self._tokenizer.pad_token_id,
-            )
-
-        # Decode only the generated part
-        generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-        translated = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
-
+        translated = response["choices"][0]["text"]
         return self._post_process(translated)
-
-    def translate_batch(
-        self,
-        texts: list[str],
-        source_lang: str = "auto",
-        target_lang: str = "en",
-        batch_size: int = 4,
-    ) -> list[str]:
-        """Translate multiple texts in batches.
-
-        Args:
-            texts: List of texts to translate.
-            source_lang: Source language code.
-            target_lang: Target language code.
-            batch_size: Batch size for processing.
-
-        Returns:
-            List of translated texts.
-        """
-        results = []
-
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            for text in batch:
-                results.append(self.translate(text, source_lang, target_lang))
-
-        return results
 
     def _post_process(self, text: str) -> str:
         """Post-process translated text.
@@ -199,111 +353,11 @@ class ModelScopeTranslator:
 
     def cleanup(self):
         """Free model memory."""
-        import gc
-
         if self._model is not None:
             del self._model
             self._model = None
-
-        if self._tokenizer is not None:
-            del self._tokenizer
-            self._tokenizer = None
-
+        import gc
         gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
-
-
-class OllamaTranslator:
-    """Translate text using Ollama API.
-
-    Alternative to ModelScope for users who prefer Ollama.
-    """
-
-    def __init__(
-        self,
-        model_name: str = "gemma3:1b",
-        base_url: str = "http://localhost:11434",
-        temperature: float = 0.3,
-        timeout: int = 120,
-    ):
-        """Initialize Ollama translator.
-
-        Args:
-            model_name: Ollama model name.
-            base_url: Ollama API base URL.
-            temperature: Generation temperature.
-            timeout: Request timeout in seconds.
-        """
-        self.model_name = model_name
-        self.base_url = base_url.rstrip("/")
-        self.temperature = temperature
-        self.timeout = timeout
-
-    def translate(self, text: str, source_lang: str = "auto", target_lang: str = "en") -> str:
-        """Translate text via Ollama API.
-
-        Args:
-            text: Text to translate.
-            source_lang: Source language code.
-            target_lang: Target language code.
-
-        Returns:
-            Translated text.
-        """
-        import requests
-
-        if not text.strip():
-            return ""
-
-        source_name = LANGUAGE_MAP.get(source_lang, source_lang)
-        target_name = LANGUAGE_MAP.get(target_lang, target_lang)
-
-        prompt = TRANSLATION_PROMPT_TEMPLATE.format(
-            source_lang=source_name,
-            source_code=source_lang,
-            target_lang=target_name,
-            target_code=target_lang,
-            text=text,
-        )
-
-        payload = {
-            "model": self.model_name,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": self.temperature},
-        }
-
-        response = requests.post(
-            f"{self.base_url}/api/generate",
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-
-        result = response.json()
-        translated = result.get("response", "")
-
-        return self._post_process(translated)
-
-    def _post_process(self, text: str) -> str:
-        """Post-process translated text."""
-        prefixes = [
-            r"^Here is the translation.*?:",
-            r"^Here's the translation.*?:",
-            r"^Translation:",
-        ]
-        for p in prefixes:
-            text = re.sub(p, "", text, flags=re.IGNORECASE).strip()
-
-        markdown_pattern = r"^```(?:text|markdown)?\s*\n?(.*?)\n?```$"
-        text = re.sub(markdown_pattern, r"\1", text, flags=re.DOTALL).strip()
-
-        return text.strip()
 
 
 def translate_markdown(
@@ -312,10 +366,9 @@ def translate_markdown(
     target_lang: str = "en",
     model_name: str = "gemma3:1b",
     model_path: str | None = None,
-    use_ollama: bool = False,
-    ollama_url: str = "http://localhost:11434",
     device: str = "auto",
     temperature: float = 0.3,
+    cache_dir: str | None = None,
 ) -> str:
     """Translate Markdown text while preserving formatting.
 
@@ -324,28 +377,20 @@ def translate_markdown(
         source_lang: Source language code.
         target_lang: Target language code.
         model_name: Model identifier.
-        model_path: Local model path.
-        use_ollama: Whether to use Ollama instead of ModelScope.
-        ollama_url: Ollama API URL.
-        device: Compute device.
+        model_path: Direct path to GGUF file.
+        device: Ignored (always CPU for GGUF).
         temperature: Generation temperature.
+        cache_dir: Model cache directory.
 
     Returns:
         Translated Markdown text.
     """
-    if use_ollama:
-        translator = OllamaTranslator(
-            model_name=model_name,
-            base_url=ollama_url,
-            temperature=temperature,
-        )
-    else:
-        translator = ModelScopeTranslator(
-            model_name=model_name,
-            model_path=model_path,
-            device=device,
-            temperature=temperature,
-        )
+    translator = GGUFTranslator(
+        model_name=model_name,
+        model_path=model_path,
+        temperature=temperature,
+        cache_dir=cache_dir,
+    )
 
     try:
         # Split markdown into chunks for better translation
@@ -361,8 +406,7 @@ def translate_markdown(
 
         return "\n\n".join(translated_chunks)
     finally:
-        if not use_ollama:
-            translator.cleanup()
+        translator.cleanup()
 
 
 def _split_markdown(markdown: str, max_chunk_size: int = 2000) -> list[str]:

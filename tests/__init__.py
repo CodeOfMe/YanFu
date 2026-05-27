@@ -1,0 +1,1 @@
+"""YanFu - Test suite."""

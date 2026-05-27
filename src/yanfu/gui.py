@@ -492,37 +492,40 @@ class _EngineModelDownloader(QThread):
         self.signals = self._Signals()
 
     def run(self):
-        import os
-        import shutil
+        import os, shutil
+        from pathlib import Path
+        from platformdirs import user_cache_dir
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
         try:
             if self._engine == "marker":
                 if self._force:
-                    # Clear cache to force re-download
-                    from platformdirs import user_cache_dir
                     cache = Path(user_cache_dir("datalab")) / "models"
                     if cache.exists():
                         shutil.rmtree(cache)
-                        self.signals.progress.emit("Cache cleared. Re-downloading...")
-
-                from marker.models import create_model_dict
+                        self.signals.progress.emit("Cache cleared")
+                cache_dir = Path(user_cache_dir("datalab")) / "models"
+                print(f"\n[YanFu] 📁 Model cache: {cache_dir}")
+                self.signals.progress.emit(f"Cache: {cache_dir}")
                 self.signals.progress.emit("Downloading marker models (~3GB)...")
+                from marker.models import create_model_dict
                 create_model_dict()
-                self.signals.finished.emit("Marker models ready")
+                print(f"[YanFu] ✅ Marker models ready at: {cache_dir}")
+                self.signals.finished.emit(f"Marker models ready\n📁 {cache_dir}")
 
             elif self._engine == "docling":
                 if self._force:
-                    # Clear HF cache for docling
                     hf_cache = Path.home() / ".cache" / "huggingface"
                     if hf_cache.exists():
                         shutil.rmtree(hf_cache)
-                        self.signals.progress.emit("HF cache cleared. Re-downloading...")
-
-                self.signals.progress.emit("Downloading Docling models...")
+                hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+                print(f"\n[YanFu] 📁 HF cache: {hf_cache}")
+                self.signals.progress.emit(f"Cache: {hf_cache}")
+                self.signals.progress.emit("Downloading Docling models (~1.5GB)...")
                 from docling.document_converter import DocumentConverter
                 DocumentConverter()
-                self.signals.finished.emit("Docling models ready")
+                print(f"[YanFu] ✅ Docling ready at: {hf_cache}")
+                self.signals.finished.emit(f"Docling ready\n📁 {hf_cache}")
 
             elif self._engine == "easyocr":
                 if self._force:
@@ -530,12 +533,14 @@ class _EngineModelDownloader(QThread):
                     easyocr_dir = Path(easyocr.__file__).parent / "model"
                     if easyocr_dir.exists():
                         shutil.rmtree(easyocr_dir)
-                        self.signals.progress.emit("EasyOCR cache cleared. Re-downloading...")
-
-                self.signals.progress.emit("Downloading EasyOCR models (~300MB)...")
                 import easyocr
+                easyocr_dir = Path(easyocr.__file__).parent / "model"
+                print(f"\n[YanFu] 📁 EasyOCR cache: {easyocr_dir}")
+                self.signals.progress.emit(f"Cache: {easyocr_dir}")
+                self.signals.progress.emit("Downloading EasyOCR models (~300MB)...")
                 easyocr.Reader(['en', 'ch_sim'])
-                self.signals.finished.emit("EasyOCR models ready")
+                print(f"[YanFu] ✅ EasyOCR ready at: {easyocr_dir}")
+                self.signals.finished.emit(f"EasyOCR ready\n📁 {easyocr_dir}")
 
             elif self._engine == "doctr":
                 self.signals.progress.emit("Downloading DocTR models (~500MB)...")

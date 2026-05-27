@@ -56,17 +56,19 @@ class PDFParser:
     Supports multiple parsing engines.
     """
 
-    def __init__(self, engine: str = "auto", use_ocr: bool = False, langs: str = "zh,en"):
+    def __init__(self, engine: str = "auto", use_ocr: bool = False, langs: str = "zh,en", device: str = "auto"):
         """Initialize PDF parser.
 
         Args:
             engine: Parsing engine (auto, pymupdf, marker, pdfplumber, docling, etc.).
             use_ocr: Whether to use OCR for scanned documents.
             langs: Language codes for OCR.
+            device: Device for ML engines (auto/cpu/cuda/mps/dml).
         """
         self.engine = engine
         self.use_ocr = use_ocr
         self.langs = langs
+        self.device = device
 
     @staticmethod
     def list_available_engines() -> list[dict]:
@@ -153,6 +155,25 @@ class PDFParser:
             return False, f"Install: pip install {pkg}"
         except Exception as e:
             return False, str(e)
+
+    @staticmethod
+    def _detect_best_device() -> str:
+        """Detect the best available compute device."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                return "mps"
+        except ImportError:
+            pass
+        # Try DirectML (Vulkan-compatible on Windows)
+        try:
+            import torch_directml  # noqa: F401
+            return "dml"
+        except ImportError:
+            pass
+        return "cpu"
 
     def parse(self, pdf_path: str, output_dir: str | None = None) -> dict[str, Any]:
         """Parse PDF to Markdown.
@@ -314,23 +335,27 @@ class PDFParser:
         # Use HF mirror for mainland China
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
+        # Resolve device
+        device = self.device
+        if device == "auto":
+            device = self._detect_best_device()
+
         from marker.config.parser import ConfigParser
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict
         from marker.output import text_from_rendered
 
-        logger.debug(f"Parsing PDF with marker-pdf: {pdf_path}")
+        logger.debug(f"Parsing PDF with marker-pdf on {device}: {pdf_path}")
 
         config = {
             "output_format": "markdown",
             "languages": self.langs,
         }
-
         if self.use_ocr:
             config["force_ocr"] = True
 
         config_parser = ConfigParser(config)
-        artifact_dict = create_model_dict()
+        artifact_dict = create_model_dict(device=device)
 
         converter = PdfConverter(
             config=config_parser.generate_config_dict(),
@@ -898,13 +923,14 @@ def parse_document(
     use_ocr: bool = False,
     langs: str = "zh,en",
     output_dir: str | None = None,
+    device: str = "auto",
 ) -> dict[str, Any]:
     """Parse a document file (PDF or CAJ) to Markdown."""
     file_path = Path(file_path)
     suffix = file_path.suffix.lower()
 
     if suffix == ".pdf":
-        parser = PDFParser(engine=engine, use_ocr=use_ocr, langs=langs)
+        parser = PDFParser(engine=engine, use_ocr=use_ocr, langs=langs, device=device)
         return parser.parse(str(file_path), output_dir)
     elif suffix == ".caj":
         parser = CAJParser(engine=engine, use_ocr=use_ocr, langs=langs)

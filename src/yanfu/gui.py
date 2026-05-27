@@ -124,12 +124,14 @@ class ParseWorker(QThread):
         output_dir: str,
         use_ocr: bool = False,
         parse_engine: str = "auto",
+        device: str = "auto",
     ):
         super().__init__()
         self.file_path = file_path
         self.output_dir = output_dir
         self.use_ocr = use_ocr
         self.parse_engine = parse_engine
+        self.device = device
         self.signals = ParseWorkerSignals()
         self._cancel_requested = False
         self._mutex = QMutex()
@@ -157,6 +159,7 @@ class ParseWorker(QThread):
                 engine=self.parse_engine,
                 use_ocr=self.use_ocr,
                 output_dir=str(image_dir),
+                device=self.device,
             )
 
             if self.is_cancelled():
@@ -452,6 +455,52 @@ class _ModelFetchWorker(QThread):
         self.signals.finished.emit(models, self._current_model)
 
 
+class _EngineModelDownloader(QThread):
+    """Background thread for downloading selected engine's models."""
+
+    class _Signals(QObject):
+        progress = Signal(str)
+        finished = Signal(str)
+        error = Signal(str)
+
+    def __init__(self, engine: str):
+        super().__init__()
+        self._engine = engine
+        self.signals = self._Signals()
+
+    def run(self):
+        import os
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
+        try:
+            if self._engine == "marker":
+                from marker.models import create_model_dict
+                self.signals.progress.emit("Downloading marker models (~3GB)...")
+                create_model_dict()
+                self.signals.finished.emit("Marker models ready")
+
+            elif self._engine == "docling":
+                self.signals.progress.emit("Downloading Docling models (~1.5GB)...")
+                from docling.document_converter import DocumentConverter
+                DocumentConverter()
+                self.signals.finished.emit("Docling models ready")
+
+            elif self._engine == "easyocr":
+                self.signals.progress.emit("Downloading EasyOCR models (~300MB)...")
+                import easyocr
+                easyocr.Reader(['en', 'ch_sim'])
+                self.signals.finished.emit("EasyOCR models ready")
+
+            elif self._engine == "mineru":
+                self.signals.progress.emit("MinerU: run 'magic-pdf-model-download -d' manually")
+                self.signals.error.emit("MinerU requires manual download:\nmagic-pdf-model-download -d")
+
+            else:
+                self.signals.error.emit(f"Unknown engine: {self._engine}")
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+
 class SettingsDialog(QDialog):
     """Settings dialog for translation configuration."""
 
@@ -511,10 +560,10 @@ class SettingsDialog(QDialog):
 
         # Engine list with status
         self.engine_list = QListWidget()
-        self.engine_list.setMaximumHeight(180)
+        self.engine_list.setMaximumHeight(140)
         engine_layout.addWidget(self.engine_list)
 
-        # Engine combo for selection
+        # Engine + device selection
         engine_select_layout = QFormLayout()
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("Auto (Best Available)", "auto")
@@ -526,10 +575,38 @@ class SettingsDialog(QDialog):
         self.engine_combo.addItem("PDFPlumber (Tables)", "pdfplumber")
         engine_select_layout.addRow("Engine:", self.engine_combo)
 
-        self.engine_hint = QLabel("Models auto-download on first use. PyMuPDF and PDFPlumber need no models.")
-        self.engine_hint.setStyleSheet("color: #888; font-size: 11px;")
-        engine_select_layout.addRow("", self.engine_hint)
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("Auto Detect", "auto")
+        self.device_combo.addItem("CPU Only", "cpu")
+        # Check available GPU backends
+        try:
+            import torch
+            if torch.cuda.is_available():
+                self.device_combo.addItem("NVIDIA CUDA", "cuda")
+            if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                self.device_combo.addItem("Apple MPS", "mps")
+        except ImportError:
+            pass
+        # DirectML for Windows (Vulkan-compatible)
+        try:
+            import torch_directml
+            self.device_combo.addItem("DirectML (Vulkan)", "dml")
+        except ImportError:
+            pass
+        engine_select_layout.addRow("Device:", self.device_combo)
         engine_layout.addLayout(engine_select_layout)
+
+        # Download + hint
+        btn_row = QHBoxLayout()
+        self.download_btn = QPushButton("⬇ Download Selected Engine Models")
+        self.download_btn.clicked.connect(self._download_selected_engine)
+        btn_row.addWidget(self.download_btn)
+        btn_row.addStretch()
+        engine_layout.addLayout(btn_row)
+
+        self.engine_hint = QLabel("Models auto-download on first Parse. Click download to pre-fetch.")
+        self.engine_hint.setStyleSheet("color: #888; font-size: 11px;")
+        engine_layout.addWidget(self.engine_hint)
 
         engine_group.setLayout(engine_layout)
         layout.addWidget(engine_group)
@@ -640,7 +717,6 @@ class SettingsDialog(QDialog):
         if models:
             for m in models:
                 self.model_combo.addItem(m, m)
-            # Restore previously selected model if it's in the list
             if current_model:
                 idx = self.model_combo.findData(current_model)
                 if idx >= 0:
@@ -652,6 +728,40 @@ class SettingsDialog(QDialog):
             self.model_combo.setEnabled(True)
             if current_model:
                 self.model_combo.setEditText(current_model)
+
+    def _download_selected_engine(self):
+        """Pre-download models for the currently selected engine."""
+        engine = self.engine_combo.currentData()
+        if engine in ("pymupdf", "pdfplumber", "auto"):
+            QMessageBox.information(self, "No Download Needed",
+                                    f"Engine '{engine}' needs no models to download.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Download Models",
+            f"Download models for '{engine}' engine?\nModels will be cached for future use.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        self.download_btn.setEnabled(False)
+        self.download_btn.setText("Downloading...")
+        self._dl_worker = _EngineModelDownloader(engine)
+        self._dl_worker.signals.progress.connect(lambda msg: self.download_btn.setText(msg))
+        self._dl_worker.signals.finished.connect(self._on_engine_dl_done)
+        self._dl_worker.signals.error.connect(self._on_engine_dl_error)
+        self._dl_worker.start()
+
+    def _on_engine_dl_done(self, msg: str):
+        self.download_btn.setEnabled(True)
+        self.download_btn.setText("⬇ Download Selected Engine Models")
+        self._update_engine_list()
+        QMessageBox.information(self, "Done", msg)
+
+    def _on_engine_dl_error(self, err: str):
+        self.download_btn.setEnabled(True)
+        self.download_btn.setText("⬇ Download Selected Engine Models")
+        QMessageBox.critical(self, "Download Failed", err)
 
     def _load_settings(self):
         provider = self.config.get("provider", "ollama")
@@ -684,6 +794,12 @@ class SettingsDialog(QDialog):
         self.font_size_spin.setValue(self.config.get("font_size", 11))
         self.margin_spin.setValue(self.config.get("margin", 20.0))
 
+        # Device
+        dev = self.config.get("device", "auto")
+        idx = self.device_combo.findData(dev)
+        if idx >= 0:
+            self.device_combo.setCurrentIndex(idx)
+
     def save_settings(self):
         self.config.set("provider", self.provider_combo.currentData())
         self.config.set("base_url", self.base_url_edit.text())
@@ -696,6 +812,7 @@ class SettingsDialog(QDialog):
         self.config.set("target_lang", self.target_lang_combo.currentData())
         self.config.set("temperature", self.temperature_spin.value())
         self.config.set("parse_engine", self.engine_combo.currentData())
+        self.config.set("device", self.device_combo.currentData())
         self.config.set("page_size", self.page_size_combo.currentText())
         self.config.set("font_size", self.font_size_spin.value())
         self.config.set("margin", self.margin_spin.value())
@@ -981,6 +1098,7 @@ class YanFuMainWindow(QMainWindow):
             output_dir=output_dir,
             use_ocr=self.config.get("use_ocr", False),
             parse_engine=self.config.get("parse_engine", "auto"),
+            device=self.config.get("device", "auto"),
         )
         self._parse_worker.signals.started.connect(self._on_parse_started)
         self._parse_worker.signals.progress.connect(self._on_parse_progress)

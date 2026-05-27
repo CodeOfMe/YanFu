@@ -1180,7 +1180,6 @@ class YanFuMainWindow(QMainWindow):
             self._parsed_markdown = ""
             self._current_md_content = ""
             self.md_editor.clear()
-            self.parse_btn.setEnabled(True)
             self.translate_btn.setEnabled(False)
             self.save_md_btn.setEnabled(False)
             self.save_pdf_btn.setEnabled(False)
@@ -1208,7 +1207,6 @@ class YanFuMainWindow(QMainWindow):
         
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.parse_btn.setEnabled(False)
         self.translate_btn.setEnabled(False)
         self.status.showMessage("Parsing PDF...")
 
@@ -1242,14 +1240,12 @@ class YanFuMainWindow(QMainWindow):
         self._parsed_markdown = result.markdown
         self.md_editor.setPlainText(result.markdown)
         self.translate_btn.setEnabled(True)
-        self.parse_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status.showMessage(f"Parsed: {result.page_count} pages, {len(result.images)} images")
 
     def _on_parse_error(self, error: str):
         print(f"\n[YanFu] ❌ Parse error: {error}")
         QMessageBox.critical(self, "Parse Error", error)
-        self.parse_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status.showMessage("Parse failed")
 
@@ -1359,7 +1355,6 @@ class YanFuMainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.translate_btn.setEnabled(False)
-        self.parse_btn.setEnabled(False)
         self.status.showMessage("Translating...")
 
         self._translate_worker = TranslateWorker(
@@ -1399,7 +1394,6 @@ class YanFuMainWindow(QMainWindow):
         self.save_md_btn.setEnabled(True)
         self.save_pdf_btn.setEnabled(True)
         self.translate_btn.setEnabled(True)
-        self.parse_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status.showMessage(f"Translation completed: {output_pdf}")
         print("=" * 60)
@@ -1408,7 +1402,6 @@ class YanFuMainWindow(QMainWindow):
         print(f"\n[YanFu] ❌ Translation error: {error}")
         QMessageBox.critical(self, "Translation Error", error)
         self.translate_btn.setEnabled(True)
-        self.parse_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status.showMessage("Translation failed")
         print("=" * 60)

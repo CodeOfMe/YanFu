@@ -1,0 +1,110 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yanfu"
+dynamic = ["version"]
+description = "PDF/CAJ to Markdown translator with layout-preserving PDF generation using local LLMs"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "CodeOfMe", email = "wedonotuse@outlook.com" }
+]
+keywords = [
+    "pdf",
+    "caj",
+    "markdown",
+    "translation",
+    "ocr",
+    "document",
+    "local-llm",
+    "modelscope",
+    "gemma",
+    "qwen",
+    "layout-preservation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Utilities",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "PyMuPDF>=1.23.0",
+    "Pillow>=9.0.0",
+    "requests>=2.28.0",
+    "reportlab>=4.0.0",
+    "markdown>=3.4.0",
+    "python-docx>=0.8.11",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "marker-pdf>=1.0.0",
+    "surya-ocr>=0.6.0",
+]
+translation = [
+    "modelscope>=1.14.0",
+    "transformers>=4.35.0",
+    "torch>=2.0.0",
+    "accelerate>=0.25.0",
+]
+gui = [
+    "PySide6>=6.5.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+    "ruff>=0.1.0",
+]
+all = [
+    "yanfu[ocr,translation,gui,dev]",
+]
+
+[project.scripts]
+yanfu = "yanfu.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CodeOfMe/YanFu"
+Documentation = "https://github.com/CodeOfMe/YanFu#readme"
+Repository = "https://github.com/CodeOfMe/YanFu.git"
+Issues = "https://github.com/CodeOfMe/YanFu/issues"
+Changelog = "https://github.com/CodeOfMe/YanFu/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/yanfu/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yanfu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]

@@ -329,6 +329,53 @@ class TranslateWorker(QThread):
 # PDF Viewer Widget
 # ---------------------------------------------------------------------------
 
+class MarkdownViewer(QWidget):
+    """Widget to display markdown with toggle between rendered HTML and plain text."""
+    
+    def __init__(self, title: str = "", parent=None):
+        super().__init__(parent)
+        self._raw_md = ""
+        self._rendered = True
+        self._build_ui(title)
+
+    def _build_ui(self, title: str):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self._editor = QTextEdit()
+        self._editor.setReadOnly(True)
+        self._editor.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
+        layout.addWidget(self._editor)
+
+    def set_markdown(self, md: str):
+        self._raw_md = md
+        if self._rendered:
+            self._show_rendered()
+        else:
+            self._show_plain()
+
+    def toggle_view(self):
+        self._rendered = not self._rendered
+        if self._raw_md:
+            self.set_markdown(self._raw_md)
+
+    def _show_rendered(self):
+        """Convert markdown to HTML and display."""
+        try:
+            from markdown import markdown
+            html = markdown(self._raw_md, extensions=['tables', 'fenced_code', 'codehilite'])
+            css = "<style>body{font-family: -apple-system, sans-serif; font-size: 13px; line-height: 1.6;} table{border-collapse: collapse; width: 100%;} td,th{border: 1px solid #ddd; padding: 6px;} code{background: #f5f5f5; padding: 2px 4px; border-radius: 3px;} pre{background: #f5f5f5; padding: 8px; border-radius: 4px;} blockquote{border-left: 3px solid #ddd; margin-left: 0; padding-left: 12px; color: #666;} h1,h2,h3{border-bottom: 1px solid #eee; padding-bottom: 4px;}</style>"
+            self._editor.setHtml(css + html)
+        except Exception:
+            self._show_plain()
+
+    def _show_plain(self):
+        self._editor.setPlainText(self._raw_md)
+
+    def editor(self):
+        return self._editor
+
+
 class PDFViewerWidget(QWidget):
     """Widget to display PDF pages with scroll synchronization."""
 
@@ -1041,13 +1088,12 @@ class YanFuMainWindow(QMainWindow):
         mid_header = QHBoxLayout()
         mid_header.addWidget(QLabel("📝 Parsed Markdown"))
         mid_header.addStretch()
-        right_layout2 = QVBoxLayout()  # placeholder, will be defined properly
-        
+        self.md_toggle_btn = QPushButton("🔄 Plain")
+        self.md_toggle_btn.setFixedWidth(80)
+        self.md_toggle_btn.clicked.connect(lambda: self._toggle_view("md"))
+        mid_header.addWidget(self.md_toggle_btn)
         mid_layout.addLayout(mid_header)
-        self.md_preview = QTextEdit()
-        self.md_preview.setReadOnly(True)
-        self.md_preview.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
-        self.md_preview.setPlaceholderText("Parsed markdown will appear here...")
+        self.md_preview = MarkdownViewer()
         mid_layout.addWidget(self.md_preview)
         main_splitter.addWidget(mid_widget)
 
@@ -1062,6 +1108,10 @@ class YanFuMainWindow(QMainWindow):
         self.sync_scroll_check.setChecked(True)
         self.sync_scroll_check.toggled.connect(self._on_sync_scroll_toggled)
         right_header.addWidget(self.sync_scroll_check)
+        self.tl_toggle_btn = QPushButton("🔄 Plain")
+        self.tl_toggle_btn.setFixedWidth(80)
+        self.tl_toggle_btn.clicked.connect(lambda: self._toggle_view("tl"))
+        right_header.addWidget(self.tl_toggle_btn)
         self.translate_btn = QPushButton("▶ Translate")
         self.translate_btn.clicked.connect(self._translate_current)
         self.translate_btn.setEnabled(False)
@@ -1080,10 +1130,9 @@ class YanFuMainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
 
-        self.md_editor = QTextEdit()
-        self.md_editor.setReadOnly(False)
-        self.md_editor.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 11))
-        self.md_editor.setPlaceholderText("Translation will appear here...")
+        self.md_editor = MarkdownViewer()
+        self.md_editor.editor().setReadOnly(False)
+        self.md_editor.editor().setPlaceholderText("Translation will appear here...")
         right_layout.addWidget(self.md_editor)
         main_splitter.addWidget(right_widget)
 
@@ -1159,6 +1208,15 @@ class YanFuMainWindow(QMainWindow):
         self.sync_action.setChecked(True)
         self.sync_action.toggled.connect(self._on_sync_scroll_toggled)
         toolbar.addAction(self.sync_action)
+
+    def _toggle_view(self, which: str):
+        """Toggle between rendered HTML and plain text."""
+        if which == "md":
+            self.md_preview.toggle_view()
+            self.md_toggle_btn.setText("🔄 Rendered" if self.md_preview._rendered else "🔄 Plain")
+        else:
+            self.md_editor.toggle_view()
+            self.tl_toggle_btn.setText("🔄 Rendered" if self.md_editor._rendered else "🔄 Plain")
 
     def _open_pdf(self):
         """Open a PDF file."""
@@ -1304,7 +1362,8 @@ class YanFuMainWindow(QMainWindow):
         """After parsing, start translation."""
         print(f"\n[YanFu] ✅ Parsed: {result.engine}, {result.page_count}p, {len(result.images)}img, {len(result.markdown)} chars")
         self._parsed_markdown = result.markdown
-        self.md_preview.setPlainText(result.markdown)  # Show in preview
+        self.md_preview.set_markdown(result.markdown)  # Show in preview
+        self.md_editor.set_markdown("")  # Clear translation
         
         if not self._parsed_markdown.strip():
             QMessageBox.warning(self, "No Text", "PDF has no extractable text. It may be fully image-based.")
@@ -1390,7 +1449,7 @@ class YanFuMainWindow(QMainWindow):
 
         self._current_md_path = output_md
         self._current_md_content = translated_md
-        self.md_editor.setPlainText(translated_md)
+        self.md_editor.set_markdown(translated_md)
         self.save_md_btn.setEnabled(True)
         self.save_pdf_btn.setEnabled(True)
         self.translate_btn.setEnabled(True)
@@ -1425,7 +1484,7 @@ class YanFuMainWindow(QMainWindow):
         )
         if file_path:
             try:
-                content = self.md_editor.toPlainText()
+                content = self.md_editor.editor().toPlainText()
                 Path(file_path).write_text(content, encoding="utf-8")
                 self._current_md_path = file_path
                 self.status.showMessage(f"Saved: {file_path}")
@@ -1447,7 +1506,7 @@ class YanFuMainWindow(QMainWindow):
         )
         if file_path:
             try:
-                content = self.md_editor.toPlainText()
+                content = self.md_editor.editor().toPlainText()
                 render_pdf(
                     content,
                     output_path=file_path,

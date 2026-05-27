@@ -220,6 +220,7 @@ class OllamaTranslator:
         
         url = f"{self.base_url}/api/generate"
         logger.debug(f"Calling Ollama: {url} (model: {self.model})")
+        print(f"  → Sending to Ollama... (model: {self.model}, wait for response)", flush=True)
         
         payload = {
             "model": self.model,
@@ -231,7 +232,8 @@ class OllamaTranslator:
             },
         }
 
-        response = requests.post(url, json=payload, timeout=300)
+        response = requests.post(url, json=payload, timeout=600)  # 10 min for CPU
+        print(f"  ← Response received ({len(response.content)} bytes)", flush=True)
         response.raise_for_status()
         result = response.json()
         translated = result.get("response", "")
@@ -378,7 +380,7 @@ def translate_markdown(
     return "\n\n".join(translated_chunks)
 
 
-def _split_markdown(markdown: str, max_chunk_size: int = 800) -> list[str]:
+def _split_markdown(markdown: str, max_chunk_size: int = 500) -> list[str]:
     """Split Markdown into translatable chunks for small models.
 
     Preserves code blocks, formulas, and image references.
@@ -386,7 +388,7 @@ def _split_markdown(markdown: str, max_chunk_size: int = 800) -> list[str]:
 
     Args:
         markdown: Markdown text.
-        max_chunk_size: Maximum chunk size in characters (default 800 for small models).
+        max_chunk_size: Maximum chunk size in characters (default 500 for small CPU models).
 
     Returns:
         List of markdown chunks.

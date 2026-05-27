@@ -1,8 +1,9 @@
-"""YanFu - Local LLM translation using GGUF models.
+"""YanFu - Translation using Ollama or OpenAI-compatible APIs.
 
-Handles translation of Markdown text using GGUF-format models
-downloaded automatically from ModelScope on first run.
-No Ollama or external service configuration needed.
+Supports:
+- Local Ollama server (default: http://localhost:11434)
+- OpenAI API
+- Any OpenAI-compatible endpoint (vLLM, LM Studio, etc.)
 """
 
 from __future__ import annotations
@@ -11,328 +12,139 @@ import os
 import re
 from pathlib import Path
 
+import requests
+
 from .utils import LANGUAGE_MAP, TRANSLATION_PROMPT_TEMPLATE
 
-# Model definitions with GGUF download sources
-MODEL_DEFINITIONS = {
-    "gemma3:1b": {
-        "name": "Google Gemma 3 1B",
-        "gguf_repo": "bartowski/gemma-3-1b-it-GGUF",
-        "gguf_file": "gemma-3-1b-it-Q4_K_M.gguf",
-        "size_mb": 780,
-        "quality": "Good balance of speed and quality",
+# Predefined model presets for easy selection
+MODEL_PRESETS = {
+    "ollama/gemma3:1b": {
+        "name": "Google Gemma 3 1B (Local)",
+        "provider": "ollama",
+        "model": "gemma3:1b",
+        "description": "Fast local model, good for quick translations",
     },
-    "qwen3:0.6b": {
-        "name": "Alibaba Qwen 3 0.6B",
-        "gguf_repo": "Qwen/Qwen3-0.6B-GGUF",
-        "gguf_file": "qwen3-0.6b-q4_k_m.gguf",
-        "size_mb": 420,
-        "quality": "Fastest, lower quality",
+    "ollama/qwen2.5:1.5b": {
+        "name": "Qwen 2.5 1.5B (Local)",
+        "provider": "ollama",
+        "model": "qwen2.5:1.5b",
+        "description": "Excellent Chinese support, lightweight",
     },
-    "qwen3:1.8b": {
-        "name": "Alibaba Qwen 3 1.8B",
-        "gguf_repo": "Qwen/Qwen3-1.8B-GGUF",
-        "gguf_file": "qwen3-1.8b-q4_k_m.gguf",
-        "size_mb": 1100,
-        "quality": "Better quality, slower",
+    "ollama/qwen2.5:7b": {
+        "name": "Qwen 2.5 7B (Local)",
+        "provider": "ollama",
+        "model": "qwen2.5:7b",
+        "description": "Better quality, needs more RAM",
+    },
+    "ollama/llama3.2:3b": {
+        "name": "Llama 3.2 3B (Local)",
+        "provider": "ollama",
+        "model": "llama3.2:3b",
+        "description": "Good general purpose model",
+    },
+    "openai/gpt-4o-mini": {
+        "name": "GPT-4o Mini (Cloud)",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "description": "Fast and affordable OpenAI model",
+    },
+    "openai/gpt-4o": {
+        "name": "GPT-4o (Cloud)",
+        "provider": "openai",
+        "model": "gpt-4o",
+        "description": "High-quality OpenAI model",
     },
 }
 
-# Default model cache directory
-DEFAULT_CACHE_DIR = Path.home() / ".cache" / "yanfu" / "models"
+# Default configuration
+DEFAULT_CONFIG = {
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "gemma3:1b",
+    "api_key": "",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+}
 
-# Bundled models directory (for MSI/DMG packaging)
-# Models bundled in the installer are stored here
-def get_bundled_models_dir() -> Path:
-    """Get the directory for bundled models.
-
-    Checks multiple locations for bundled models:
-    1. Relative to the package (for development)
-    2. Relative to the executable (for installed apps)
-    3. Environment variable YANFU_MODEL_DIR
-    """
-    # Check environment variable first
-    env_dir = os.environ.get("YANFU_MODEL_DIR")
-    if env_dir:
-        return Path(env_dir)
-
-    # Check relative to package (development)
-    package_dir = Path(__file__).parent.parent.parent.parent / "models"
-    if package_dir.exists():
-        return package_dir
-
-    # Check relative to executable (installed app)
-    try:
-        import sys
-        if getattr(sys, "frozen", False):
-            # Running as compiled executable
-            exe_dir = Path(sys.executable).parent
-            bundled_dir = exe_dir / "models"
-            if bundled_dir.exists():
-                return bundled_dir
-    except Exception:
-        pass
-
-    return package_dir
+# Configuration file location
+CONFIG_DIR = Path.home() / ".config" / "yanfu"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
-BUNDLED_MODELS_DIR = get_bundled_models_dir()
+class ConfigManager:
+    """Manage YanFu configuration."""
 
+    def __init__(self, config_file: str | Path | None = None):
+        self.config_file = Path(config_file) if config_file else CONFIG_FILE
+        self.config = self._load_config()
 
-class ModelManager:
-    """Manage GGUF model downloads and caching.
+    def _load_config(self) -> dict:
+        """Load configuration from file."""
+        import json
 
-    Automatically downloads models from HuggingFace/ModelScope on first use.
-    """
-
-    def __init__(self, cache_dir: str | Path | None = None):
-        """Initialize model manager.
-
-        Args:
-            cache_dir: Directory to store downloaded models.
-        """
-        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-    def get_model_path(self, model_name: str) -> Path | None:
-        """Get the local path for a model.
-
-        Checks bundled models first, then cache directory.
-
-        Args:
-            model_name: Model identifier.
-
-        Returns:
-            Path to GGUF file or None if not found.
-        """
-        model_def = MODEL_DEFINITIONS.get(model_name)
-        if not model_def:
-            return None
-
-        gguf_file = model_def["gguf_file"]
-
-        # Check bundled models first (for MSI/DMG installs)
-        if BUNDLED_MODELS_DIR.exists():
-            bundled_path = BUNDLED_MODELS_DIR / model_name / gguf_file
-            if bundled_path.exists():
-                return bundled_path
-
-        # Check cache directory
-        model_path = self.cache_dir / model_name / gguf_file
-        if model_path.exists():
-            return model_path
-
-        return None
-
-    def is_model_downloaded(self, model_name: str) -> bool:
-        """Check if a model is available (bundled or cached).
-
-        Args:
-            model_name: Model identifier.
-
-        Returns:
-            True if model exists locally (bundled or cached).
-        """
-        return self.get_model_path(model_name) is not None
-
-    def download_model(self, model_name: str, force: bool = False) -> Path:
-        """Download a model from HuggingFace/ModelScope.
-
-        Args:
-            model_name: Model identifier.
-            force: Force re-download even if exists.
-
-        Returns:
-            Path to downloaded GGUF file.
-        """
-        model_def = MODEL_DEFINITIONS.get(model_name)
-        if not model_def:
-            raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_DEFINITIONS.keys())}")
-
-        model_dir = self.cache_dir / model_name
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        gguf_file = model_def["gguf_file"]
-        model_path = model_dir / gguf_file
-
-        if model_path.exists() and not force:
-            print(f"[YanFu] Model already exists: {model_path}")
-            return model_path
-
-        print(f"[YanFu] Downloading {model_def['name']} ({model_def['size_mb']}MB)...")
-        print(f"[YanFu] Source: {model_def['gguf_repo']}/{gguf_file}")
-
-        # Try HuggingFace first, then ModelScope
-        try:
-            self._download_from_huggingface(model_def, model_dir)
-        except Exception as hf_error:
-            print(f"[YanFu] HuggingFace download failed: {hf_error}")
-            print("[YanFu] Trying ModelScope...")
+        if self.config_file.exists():
             try:
-                self._download_from_modelscope(model_def, model_dir)
-            except Exception as ms_error:
-                raise RuntimeError(
-                    f"Failed to download model from both sources.\n"
-                    f"HuggingFace: {hf_error}\n"
-                    f"ModelScope: {ms_error}"
-                ) from ms_error
+                with open(self.config_file, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return DEFAULT_CONFIG.copy()
 
-        if not model_path.exists():
-            raise RuntimeError(f"Model file not found after download: {model_path}")
+    def save_config(self):
+        """Save configuration to file."""
+        import json
 
-        print(f"[YanFu] Model downloaded successfully: {model_path}")
-        return model_path
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, indent=2, ensure_ascii=False)
 
-    def _download_from_huggingface(self, model_def: dict, model_dir: Path):
-        """Download model from HuggingFace.
+    def get(self, key: str, default=None):
+        """Get configuration value."""
+        return self.config.get(key, default)
 
-        Args:
-            model_def: Model definition dictionary.
-            model_dir: Target directory.
-        """
-        from huggingface_hub import hf_hub_download
+    def set(self, key: str, value):
+        """Set configuration value."""
+        self.config[key] = value
 
-        hf_hub_download(
-            repo_id=model_def["gguf_repo"],
-            filename=model_def["gguf_file"],
-            local_dir=str(model_dir),
-            local_dir_use_symlinks=False,
-        )
+    def is_configured(self) -> bool:
+        """Check if basic configuration exists."""
+        return bool(self.config.get("provider") and self.config.get("model"))
 
-    def _download_from_modelscope(self, model_def: dict, model_dir: Path):
-        """Download model from ModelScope.
-
-        Args:
-            model_def: Model definition dictionary.
-            model_dir: Target directory.
-        """
-        from modelscope.hub.snapshot_download import snapshot_download
-
-        # ModelScope uses original model repos, not GGUF repos
-        # We need to map GGUF repos to ModelScope equivalents
-        gguf_repo = model_def["gguf_repo"]
-        if "bartowski" in gguf_repo:
-            # Map bartowski GGUF to ModelScope equivalent
-            ms_repo = gguf_repo.replace("bartowski/", "")
-        else:
-            ms_repo = gguf_repo
-
-        snapshot_download(
-            model_id=ms_repo,
-            cache_dir=str(model_dir),
-            allow_patterns=[model_def["gguf_file"]],
-        )
-
-    def list_downloaded_models(self) -> list[str]:
-        """List all downloaded models.
-
-        Returns:
-            List of model names.
-        """
-        downloaded = []
-        for model_name in MODEL_DEFINITIONS:
-            if self.is_model_downloaded(model_name):
-                downloaded.append(model_name)
-        return downloaded
-
-    def get_model_size(self, model_name: str) -> int:
-        """Get the size of a downloaded model in bytes.
-
-        Args:
-            model_name: Model identifier.
-
-        Returns:
-            File size in bytes, or 0 if not downloaded.
-        """
-        model_path = self.get_model_path(model_name)
-        if model_path:
-            return model_path.stat().st_size
-        return 0
-
-    def cleanup(self, model_name: str | None = None):
-        """Remove downloaded models to free disk space.
-
-        Args:
-            model_name: Specific model to remove, or None for all.
-        """
-        if model_name:
-            model_dir = self.cache_dir / model_name
-            if model_dir.exists():
-                import shutil
-                shutil.rmtree(model_dir)
-                print(f"[YanFu] Removed model: {model_name}")
-        else:
-            if self.cache_dir.exists():
-                import shutil
-                shutil.rmtree(self.cache_dir)
-                print(f"[YanFu] Removed all models from {self.cache_dir}")
+    def reset(self):
+        """Reset to default configuration."""
+        self.config = DEFAULT_CONFIG.copy()
+        if self.config_file.exists():
+            self.config_file.unlink()
 
 
-class GGUFTranslator:
-    """Translate text using GGUF models via llama-cpp-python.
-
-    Zero-configuration: models are auto-downloaded on first use.
-    """
+class OllamaTranslator:
+    """Translate text using Ollama or OpenAI-compatible APIs."""
 
     def __init__(
         self,
-        model_name: str = "gemma3:1b",
-        model_path: str | Path | None = None,
-        n_ctx: int = 4096,
-        n_threads: int = -1,
+        provider: str = "ollama",
+        base_url: str = "http://localhost:11434",
+        model: str = "gemma3:1b",
+        api_key: str = "",
         temperature: float = 0.3,
-        cache_dir: str | Path | None = None,
+        max_tokens: int = 4096,
     ):
         """Initialize translator.
 
         Args:
-            model_name: Model identifier.
-            model_path: Direct path to GGUF file (optional).
-            n_ctx: Context window size.
-            n_threads: Number of CPU threads (-1 = auto).
+            provider: API provider (ollama, openai, custom).
+            base_url: API base URL.
+            model: Model name to use.
+            api_key: API key (for OpenAI or custom providers).
             temperature: Generation temperature.
-            cache_dir: Model cache directory.
+            max_tokens: Maximum tokens to generate.
         """
-        self.model_name = model_name
-        self.model_path = model_path
-        self.n_ctx = n_ctx
-        self.n_threads = n_threads if n_threads > 0 else os.cpu_count() or 4
+        self.provider = provider
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
         self.temperature = temperature
-        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
-        self._model = None
-        self._model_manager = ModelManager(self.cache_dir)
-
-    def _ensure_model(self):
-        """Ensure model is downloaded and loaded."""
-        if self._model is not None:
-            return
-
-        # Get model path
-        if self.model_path:
-            gguf_path = Path(self.model_path)
-        else:
-            gguf_path = self._model_manager.get_model_path(self.model_name)
-            if gguf_path is None:
-                print("[YanFu] Model not found locally, downloading...")
-                gguf_path = self._model_manager.download_model(self.model_name)
-
-        if not gguf_path.exists():
-            raise FileNotFoundError(f"GGUF model file not found: {gguf_path}")
-
-        print(f"[YanFu] Loading model: {gguf_path}")
-
-        # Load model with llama-cpp-python
-        from llama_cpp import Llama
-
-        self._model = Llama(
-            model_path=str(gguf_path),
-            n_ctx=self.n_ctx,
-            n_threads=self.n_threads,
-            n_gpu_layers=0,  # CPU only for compatibility
-            verbose=False,
-        )
-
-        print("[YanFu] Model loaded successfully")
+        self.max_tokens = max_tokens
 
     def translate(self, text: str, source_lang: str = "auto", target_lang: str = "en") -> str:
         """Translate text.
@@ -348,8 +160,6 @@ class GGUFTranslator:
         if not text.strip():
             return ""
 
-        self._ensure_model()
-
         source_name = LANGUAGE_MAP.get(source_lang, source_lang)
         target_name = LANGUAGE_MAP.get(target_lang, target_lang)
 
@@ -361,16 +171,67 @@ class GGUFTranslator:
             text=text,
         )
 
-        response = self._model(
-            prompt,
-            max_tokens=4096,
-            temperature=self.temperature,
-            stop=["\n\n\n", "</s>"],
-            echo=False,
-        )
+        if self.provider == "ollama":
+            response = self._call_ollama(prompt)
+        else:
+            response = self._call_openai_compatible(prompt)
 
-        translated = response["choices"][0]["text"]
-        return self._post_process(translated)
+        return self._post_process(response)
+
+    def _call_ollama(self, prompt: str) -> str:
+        """Call Ollama API.
+
+        Args:
+            prompt: Prompt text.
+
+        Returns:
+            Generated text.
+        """
+        url = f"{self.base_url}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            },
+        }
+
+        response = requests.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        return result.get("response", "")
+
+    def _call_openai_compatible(self, prompt: str) -> str:
+        """Call OpenAI-compatible API.
+
+        Args:
+            prompt: Prompt text.
+
+        Returns:
+            Generated text.
+        """
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
 
     def _post_process(self, text: str) -> str:
         """Post-process translated text.
@@ -381,7 +242,6 @@ class GGUFTranslator:
         Returns:
             Cleaned translated text.
         """
-        # Remove common LLM prefixes
         prefixes = [
             r"^Here is the translation.*?:",
             r"^Here's the translation.*?:",
@@ -392,19 +252,42 @@ class GGUFTranslator:
         for p in prefixes:
             text = re.sub(p, "", text, flags=re.IGNORECASE).strip()
 
-        # Remove markdown code blocks if present
         markdown_pattern = r"^```(?:text|markdown)?\s*\n?(.*?)\n?```$"
         text = re.sub(markdown_pattern, r"\1", text, flags=re.DOTALL).strip()
 
         return text.strip()
 
-    def cleanup(self):
-        """Free model memory."""
-        if self._model is not None:
-            del self._model
-            self._model = None
-        import gc
-        gc.collect()
+    def test_connection(self) -> tuple[bool, str]:
+        """Test connection to the API.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        try:
+            if self.provider == "ollama":
+                url = f"{self.base_url}/api/tags"
+                response = requests.get(url, timeout=5)
+                response.raise_for_status()
+                models = response.json().get("models", [])
+                model_names = [m["name"] for m in models]
+
+                if self.model in model_names:
+                    return True, f"Connected. Model '{self.model}' is available."
+                else:
+                    available = ", ".join(model_names[:5])
+                    return False, f"Model '{self.model}' not found. Available: {available}"
+            else:
+                url = f"{self.base_url}/v1/models"
+                headers = {}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                response = requests.get(url, headers=headers, timeout=5)
+                response.raise_for_status()
+                return True, f"Connected to {self.base_url}"
+        except requests.exceptions.ConnectionError:
+            return False, f"Cannot connect to {self.base_url}"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
 
 
 def translate_markdown(
@@ -416,6 +299,7 @@ def translate_markdown(
     device: str = "auto",
     temperature: float = 0.3,
     cache_dir: str | None = None,
+    config: ConfigManager | None = None,
 ) -> str:
     """Translate Markdown text while preserving formatting.
 
@@ -423,37 +307,39 @@ def translate_markdown(
         markdown: Markdown text to translate.
         source_lang: Source language code.
         target_lang: Target language code.
-        model_name: Model identifier.
-        model_path: Direct path to GGUF file.
-        device: Ignored (always CPU for GGUF).
+        model_name: Model identifier (legacy, ignored if config provided).
+        model_path: Ignored (legacy).
+        device: Ignored (legacy).
         temperature: Generation temperature.
-        cache_dir: Model cache directory.
+        cache_dir: Ignored (legacy).
+        config: Configuration manager.
 
     Returns:
         Translated Markdown text.
     """
-    translator = GGUFTranslator(
-        model_name=model_name,
-        model_path=model_path,
-        temperature=temperature,
-        cache_dir=cache_dir,
+    if config is None:
+        config = ConfigManager()
+
+    translator = OllamaTranslator(
+        provider=config.get("provider", "ollama"),
+        base_url=config.get("base_url", "http://localhost:11434"),
+        model=config.get("model", model_name),
+        api_key=config.get("api_key", ""),
+        temperature=config.get("temperature", temperature),
+        max_tokens=config.get("max_tokens", 4096),
     )
 
-    try:
-        # Split markdown into chunks for better translation
-        chunks = _split_markdown(markdown)
-        translated_chunks = []
+    chunks = _split_markdown(markdown)
+    translated_chunks = []
 
-        for chunk in chunks:
-            if chunk.strip():
-                translated = translator.translate(chunk, source_lang, target_lang)
-                translated_chunks.append(translated)
-            else:
-                translated_chunks.append(chunk)
+    for chunk in chunks:
+        if chunk.strip():
+            translated = translator.translate(chunk, source_lang, target_lang)
+            translated_chunks.append(translated)
+        else:
+            translated_chunks.append(chunk)
 
-        return "\n\n".join(translated_chunks)
-    finally:
-        translator.cleanup()
+    return "\n\n".join(translated_chunks)
 
 
 def _split_markdown(markdown: str, max_chunk_size: int = 2000) -> list[str]:
@@ -471,7 +357,6 @@ def _split_markdown(markdown: str, max_chunk_size: int = 2000) -> list[str]:
     chunks = []
     current_chunk = ""
 
-    # Split by paragraphs
     paragraphs = markdown.split("\n\n")
 
     for para in paragraphs:

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "yanfu"
 dynamic = ["version"]
-description = "PDF/CAJ to Markdown translator with layout-preserving PDF generation using local LLMs"
+description = "PDF/CAJ to Markdown translator with layout-preserving PDF generation using Ollama or OpenAI-compatible APIs"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 authors = [
@@ -18,17 +18,17 @@ keywords = [
     "translation",
     "ocr",
     "document",
+    "ollama",
+    "openai",
     "local-llm",
-    "modelscope",
     "gemma",
     "qwen",
     "layout-preservation",
-    "gguf",
-    "llama-cpp",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
+    "Environment :: X11 Applications :: Qt",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
@@ -51,12 +51,9 @@ dependencies = [
     # PDF generation
     "reportlab>=4.0.0",
     "markdown>=3.4.0",
-    # Local LLM inference (GGUF)
-    "llama-cpp-python>=0.3.0",
-    # Model downloading
-    "modelscope>=1.14.0",
-    "huggingface-hub>=0.20.0",
-    # HTTP
+    # GUI
+    "PySide6>=6.5.0",
+    # HTTP (for Ollama/OpenAI API calls)
     "requests>=2.28.0",
     # Progress bars
     "tqdm>=4.65.0",
@@ -67,9 +64,6 @@ ocr = [
     "marker-pdf>=1.0.0",
     "surya-ocr>=0.6.0",
 ]
-gui = [
-    "PySide6>=6.5.0",
-]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
@@ -78,7 +72,7 @@ dev = [
     "ruff>=0.1.0",
 ]
 all = [
-    "yanfu[ocr,gui,dev]",
+    "yanfu[ocr,dev]",
 ]
 
 [project.scripts]
@@ -123,7 +117,7 @@ ignore = ["E501"]
 [tool.briefcase]
 project_name = "YanFu"
 bundle = "org.codeofme"
-version = "0.1.0"
+version = "0.2.0"
 url = "https://github.com/CodeOfMe/YanFu"
 license = "GPL-3.0"
 author = "CodeOfMe"
@@ -131,10 +125,9 @@ author_email = "wedonotuse@outlook.com"
 
 [tool.briefcase.app.yanfu]
 formal_name = "YanFu"
-description = "PDF/CAJ Document Translator with Local LLMs"
-long_description = """Translate PDF and CAJ documents using local GGUF models.
-Zero-configuration: Models are bundled in the installer.
-No internet connection required after installation."""
+description = "PDF/CAJ Document Translator with Ollama/OpenAI"
+long_description = """Translate PDF and CAJ documents using Ollama or OpenAI-compatible APIs.
+Supports local Ollama server, OpenAI, and any OpenAI-compatible endpoint."""
 icon = "src/yanfu/resources/icons/yanfu"
 sources = ["src/yanfu"]
 requires = [
@@ -145,9 +138,6 @@ requires = [
     "python-docx>=0.8.11",
     "reportlab>=4.0.0",
     "markdown>=3.4.0",
-    "llama-cpp-python>=0.3.0",
-    "modelscope>=1.14.0",
-    "huggingface-hub>=0.20.0",
     "requests>=2.28.0",
     "tqdm>=4.65.0",
 ]

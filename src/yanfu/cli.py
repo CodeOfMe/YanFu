@@ -1,7 +1,6 @@
 """YanFu - Command-line interface for document translation.
 
-Translates PDF and CAJ files to target language using local GGUF models.
-Zero-configuration: models auto-download on first run.
+Translates PDF and CAJ files to target language using Ollama or OpenAI-compatible APIs.
 """
 
 import argparse
@@ -11,7 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .api import ToolResult, yanfu_translate_file, yanfu_translate_files
-from .translator import MODEL_DEFINITIONS, ModelManager
+from .translator import ConfigManager, MODEL_PRESETS
 from .utils import LANGUAGE_MAP, find_documents
 
 
@@ -19,42 +18,36 @@ def main():
     """Main entry point for YanFu CLI."""
     parser = argparse.ArgumentParser(
         prog="yanfu",
-        description="YanFu - Translate PDF/CAJ documents using local LLMs (zero-configuration)",
+        description="YanFu - Translate PDF/CAJ documents using Ollama or OpenAI-compatible APIs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   yanfu --gui                                # Launch graphical interface
-  yanfu paper.pdf                              # Translate to English (default)
-  yanfu paper.pdf -l zh                        # Translate to Chinese
-  yanfu paper.pdf -l ja --model qwen3:0.6b     # Translate to Japanese with Qwen
-  yanfu paper.pdf paper2.pdf -l fr             # Translate multiple files
-  yanfu ./papers --batch -l es                 # Batch translate directory
-  yanfu paper.pdf -o ./output -l de -v         # Verbose output
-  yanfu paper.pdf --json                       # JSON output
-  yanfu paper.pdf --use-ollama                 # Use Ollama instead of ModelScope
+  yanfu --config                             # Run configuration wizard
+  yanfu paper.pdf                            # Translate to English (default)
+  yanfu paper.pdf -l zh                      # Translate to Chinese
+  yanfu paper.pdf -l ja                      # Translate to Japanese
+  yanfu paper.pdf paper2.pdf -l fr           # Translate multiple files
+  yanfu ./papers --batch -l es               # Batch translate directory
+  yanfu paper.pdf -o ./output -l de -v       # Verbose output
+  yanfu paper.pdf --json                     # JSON output
 
-Translation Models (auto-downloaded on first use):
-  gemma3:1b    Google Gemma 3 1B (default, ~780MB)
-  qwen3:0.6b   Alibaba Qwen 3 0.6B (fastest, ~420MB)
-  qwen3:1.8b   Alibaba Qwen 3 1.8B (best quality, ~1.1GB)
+Translation Models (configure with --config):
+  Ollama (Local):
+    gemma3:1b        Google Gemma 3 1B
+    qwen2.5:1.5b     Qwen 2.5 1.5B (excellent for Chinese)
+    qwen2.5:7b       Qwen 2.5 7B (better quality)
+    llama3.2:3b      Llama 3.2 3B
 
-Languages:
-  en   English (default target)
-  zh   Chinese (Simplified)
-  zh-Hant  Chinese (Traditional)
-  ja   Japanese
-  ko   Korean
-  fr   French
-  de   German
-  es   Spanish
-  ru   Russian
-  ... (see full list with --list-langs)
+  OpenAI (Cloud, requires API key):
+    gpt-4o-mini      Fast and affordable
+    gpt-4o           High quality
 
-Zero-Configuration:
-  - All dependencies installed with pip
-  - Models auto-download from ModelScope/HuggingFace on first run
-  - No Ollama, no API keys, no external services needed
-  - Works completely offline after first download
+  Custom: Any OpenAI-compatible endpoint (vLLM, LM Studio, etc.)
+
+Configuration:
+  Run 'yanfu --config' to set up your translation provider.
+  Configuration is saved to ~/.config/yanfu/config.json
         """,
     )
 
@@ -101,21 +94,6 @@ Zero-Configuration:
         "--source-lang",
         default="auto",
         help="Source language code (default: auto)",
-    )
-    parser.add_argument(
-        "--model",
-        default="gemma3:1b",
-        help="Translation model (default: gemma3:1b)",
-    )
-    parser.add_argument(
-        "--model-path",
-        default=None,
-        help="Direct path to GGUF model file (optional)",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        default=None,
-        help="Model cache directory (default: ~/.cache/yanfu/models)",
     )
     parser.add_argument(
         "--use-ocr",
@@ -170,22 +148,22 @@ Zero-Configuration:
     parser.add_argument(
         "--list-models",
         action="store_true",
-        help="List available translation models",
+        help="List available translation model presets",
     )
     parser.add_argument(
-        "--download-model",
-        metavar="MODEL",
-        help="Download a model without translating",
-    )
-    parser.add_argument(
-        "--list-downloaded",
+        "--config",
         action="store_true",
-        help="List downloaded models",
+        help="Run configuration wizard",
     )
     parser.add_argument(
-        "--cleanup-models",
+        "--test-connection",
         action="store_true",
-        help="Remove all downloaded models",
+        help="Test connection to configured translation provider",
+    )
+    parser.add_argument(
+        "--reset-config",
+        action="store_true",
+        help="Reset configuration to defaults",
     )
     parser.add_argument(
         "--gui",
@@ -195,7 +173,35 @@ Zero-Configuration:
 
     args = parser.parse_args()
 
-    # Handle model management commands
+    # Handle configuration commands
+    if args.config:
+        from .config_wizard import run_config_wizard
+        run_config_wizard()
+        sys.exit(0)
+
+    if args.reset_config:
+        config = ConfigManager()
+        config.reset()
+        print("Configuration reset to defaults.")
+        sys.exit(0)
+
+    if args.test_connection:
+        config = ConfigManager()
+        if not config.is_configured():
+            print("Not configured. Run 'yanfu --config' to set up.")
+            sys.exit(1)
+
+        from .translator import OllamaTranslator
+        translator = OllamaTranslator(
+            provider=config.get("provider"),
+            base_url=config.get("base_url"),
+            model=config.get("model"),
+            api_key=config.get("api_key", ""),
+        )
+        success, message = translator.test_connection()
+        print(message)
+        sys.exit(0 if success else 1)
+
     if args.list_langs:
         print("Supported languages:")
         for code, name in LANGUAGE_MAP.items():
@@ -204,53 +210,28 @@ Zero-Configuration:
         sys.exit(0)
 
     if args.list_models:
-        print("Available translation models (auto-downloaded on first use):")
+        print("Available translation model presets:")
         print()
-        for model_id, info in MODEL_DEFINITIONS.items():
-            status = ""
-            mm = ModelManager()
-            if mm.is_model_downloaded(model_id):
-                size = mm.get_model_size(model_id)
-                status = f" [Downloaded: {size / 1024 / 1024:.0f}MB]"
-            print(f"  {model_id:15s}  {info['name']}")
-            print(f"                   {info['quality']} (~{info['size_mb']}MB){status}")
+        for model_id, info in MODEL_PRESETS.items():
+            print(f"  {model_id:25s}  {info['name']}")
+            print(f"                           {info['description']}")
         print()
-        print("Models are downloaded to: ~/.cache/yanfu/models/")
-        sys.exit(0)
-
-    if args.list_downloaded:
-        mm = ModelManager(args.cache_dir)
-        downloaded = mm.list_downloaded_models()
-        if downloaded:
-            print("Downloaded models:")
-            for m in downloaded:
-                size = mm.get_model_size(m)
-                print(f"  {m:15s}  ({size / 1024 / 1024:.0f}MB)")
-        else:
-            print("No models downloaded yet.")
-            print("Models will be auto-downloaded on first use.")
-        sys.exit(0)
-
-    if args.download_model:
-        mm = ModelManager(args.cache_dir)
-        try:
-            path = mm.download_model(args.download_model)
-            print(f"Model downloaded: {path}")
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(0)
-
-    if args.cleanup_models:
-        mm = ModelManager(args.cache_dir)
-        mm.cleanup()
-        print("All models removed.")
+        print("Configure with: yanfu --config")
         sys.exit(0)
 
     if args.gui:
         from .gui import run_gui
         run_gui()
         sys.exit(0)
+
+    # Check configuration before processing
+    config = ConfigManager()
+    if not config.is_configured():
+        print("YanFu is not configured yet.")
+        print("Run 'yanfu --config' to set up your translation provider.")
+        print()
+        parser.print_help()
+        sys.exit(1)
 
     # Validate input
     if not args.input:
@@ -268,9 +249,9 @@ Zero-Configuration:
 
     # Process files
     if args.batch:
-        result = _process_batch(args)
+        result = _process_batch(args, config)
     else:
-        result = _process_files(args)
+        result = _process_files(args, config)
 
     # Output results
     if args.json:
@@ -281,11 +262,12 @@ Zero-Configuration:
     sys.exit(0 if result.success else 1)
 
 
-def _process_files(args) -> ToolResult:
+def _process_files(args, config: ConfigManager) -> ToolResult:
     """Process individual files.
 
     Args:
         args: Parsed arguments.
+        config: Configuration manager.
 
     Returns:
         ToolResult with processing results.
@@ -296,14 +278,12 @@ def _process_files(args) -> ToolResult:
             output_dir=args.output,
             target_lang=args.lang,
             source_lang=args.source_lang,
-            model_name=args.model,
-            model_path=args.model_path,
             temperature=args.temperature,
             page_size=args.page_size,
             font_name=args.font,
             font_size=args.font_size,
             margin=args.margin,
-            cache_dir=args.cache_dir,
+            config=config,
         )
     else:
         return yanfu_translate_files(
@@ -311,22 +291,21 @@ def _process_files(args) -> ToolResult:
             output_dir=args.output,
             target_lang=args.lang,
             source_lang=args.source_lang,
-            model_name=args.model,
-            model_path=args.model_path,
             temperature=args.temperature,
             page_size=args.page_size,
             font_name=args.font,
             font_size=args.font_size,
             margin=args.margin,
-            cache_dir=args.cache_dir,
+            config=config,
         )
 
 
-def _process_batch(args) -> ToolResult:
+def _process_batch(args, config: ConfigManager) -> ToolResult:
     """Process directory in batch mode.
 
     Args:
         args: Parsed arguments.
+        config: Configuration manager.
 
     Returns:
         ToolResult with batch processing results.
@@ -355,14 +334,12 @@ def _process_batch(args) -> ToolResult:
         output_dir=args.output or str(input_path),
         target_lang=args.lang,
         source_lang=args.source_lang,
-        model_name=args.model,
-        model_path=args.model_path,
         temperature=args.temperature,
         page_size=args.page_size,
         font_name=args.font,
         font_size=args.font_size,
         margin=args.margin,
-        cache_dir=args.cache_dir,
+        config=config,
     )
 
 

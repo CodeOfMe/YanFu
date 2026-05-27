@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__
 from .core import DocumentProcessor
+from .translator import ConfigManager
 
 
 @dataclass
@@ -49,8 +50,6 @@ def yanfu_translate_file(
     output_dir: str | Path | None = None,
     target_lang: str = "en",
     source_lang: str = "auto",
-    model_name: str = "gemma3:1b",
-    model_path: str | None = None,
     use_ocr: bool = False,
     parse_engine: str = "auto",
     temperature: float = 0.3,
@@ -58,20 +57,18 @@ def yanfu_translate_file(
     font_name: str | None = None,
     font_size: int = 11,
     margin: float = 20.0,
-    cache_dir: str | None = None,
+    config: ConfigManager | None = None,
 ) -> ToolResult:
     """Translate a PDF or CAJ file to target language.
 
-    Parses the document, translates using local GGUF model, and generates
-    a layout-preserving PDF. Models auto-download on first use.
+    Parses the document, translates using Ollama or OpenAI-compatible API,
+    and generates a layout-preserving PDF.
 
     Args:
         input_path: Path to input PDF or CAJ file.
         output_dir: Output directory. Defaults to input file's directory.
         target_lang: Target language code (e.g., 'en', 'zh', 'ja').
         source_lang: Source language code ('auto' for auto-detect).
-        model_name: Translation model name (gemma3:1b, qwen3:0.6b, qwen3:1.8b).
-        model_path: Direct path to GGUF model file (optional).
         use_ocr: Use OCR for scanned documents.
         parse_engine: Parsing engine (auto, pymupdf, marker, pdfplumber).
         temperature: Translation temperature (0.0-1.0).
@@ -79,7 +76,7 @@ def yanfu_translate_file(
         font_name: Output PDF font name.
         font_size: Output PDF font size.
         margin: Output PDF margin in mm.
-        cache_dir: Model cache directory.
+        config: Configuration manager.
 
     Returns:
         ToolResult with success status and output paths.
@@ -104,13 +101,14 @@ def yanfu_translate_file(
     else:
         output_dir = Path(output_dir)
 
+    if config is None:
+        config = ConfigManager()
+
     try:
         processor = DocumentProcessor(
             output_dir=str(output_dir),
             target_lang=target_lang,
             source_lang=source_lang,
-            model_name=model_name,
-            model_path=model_path,
             use_ocr=use_ocr,
             parse_engine=parse_engine,
             temperature=temperature,
@@ -118,7 +116,7 @@ def yanfu_translate_file(
             font_name=font_name,
             font_size=font_size,
             margin=margin,
-            cache_dir=cache_dir,
+            config=config,
             verbose=False,
         )
 
@@ -137,7 +135,7 @@ def yanfu_translate_file(
                 metadata={
                     "input_path": str(input_path),
                     "target_lang": target_lang,
-                    "model": model_name,
+                    "model": config.get("model", "unknown"),
                     "translation_time": result.translation_time,
                     "total_time": result.total_time,
                     "version": __version__,
@@ -171,8 +169,6 @@ def yanfu_translate_files(
     output_dir: str | Path | None = None,
     target_lang: str = "en",
     source_lang: str = "auto",
-    model_name: str = "gemma3:1b",
-    model_path: str | None = None,
     use_ocr: bool = False,
     parse_engine: str = "auto",
     temperature: float = 0.3,
@@ -180,7 +176,7 @@ def yanfu_translate_files(
     font_name: str | None = None,
     font_size: int = 11,
     margin: float = 20.0,
-    cache_dir: str | None = None,
+    config: ConfigManager | None = None,
 ) -> ToolResult:
     """Translate multiple PDF or CAJ files to target language.
 
@@ -189,8 +185,6 @@ def yanfu_translate_files(
         output_dir: Output directory.
         target_lang: Target language code.
         source_lang: Source language code.
-        model_name: Translation model name.
-        model_path: Direct path to GGUF model file.
         use_ocr: Use OCR.
         parse_engine: Parsing engine.
         temperature: Translation temperature.
@@ -198,7 +192,7 @@ def yanfu_translate_files(
         font_name: Output PDF font.
         font_size: Output PDF font size.
         margin: Output PDF margin.
-        cache_dir: Model cache directory.
+        config: Configuration manager.
 
     Returns:
         ToolResult with batch processing results.
@@ -233,13 +227,14 @@ def yanfu_translate_files(
     else:
         output_dir = Path(output_dir)
 
+    if config is None:
+        config = ConfigManager()
+
     try:
         processor = DocumentProcessor(
             output_dir=str(output_dir),
             target_lang=target_lang,
             source_lang=source_lang,
-            model_name=model_name,
-            model_path=model_path,
             use_ocr=use_ocr,
             parse_engine=parse_engine,
             temperature=temperature,
@@ -247,7 +242,7 @@ def yanfu_translate_files(
             font_name=font_name,
             font_size=font_size,
             margin=margin,
-            cache_dir=cache_dir,
+            config=config,
             verbose=False,
         )
 
@@ -275,7 +270,7 @@ def yanfu_translate_files(
             metadata={
                 "total_files": len(valid_paths),
                 "target_lang": target_lang,
-                "model": model_name,
+                "model": config.get("model", "unknown"),
                 "errors": errors,
                 "version": __version__,
             },

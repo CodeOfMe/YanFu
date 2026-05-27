@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .parser import parse_document
 from .renderer import render_pdf
-from .translator import translate_markdown
+from .translator import ConfigManager, translate_markdown
 from .utils import clean_markdown
 
 
@@ -46,7 +46,7 @@ class ProcessingResult:
 class DocumentProcessor:
     """Process documents through parse-translate-render pipeline.
 
-    Handles PDF and CAJ files, translates using local GGUF models,
+    Handles PDF and CAJ files, translates using Ollama or OpenAI-compatible APIs,
     and generates layout-preserving PDF output.
     """
 
@@ -55,8 +55,6 @@ class DocumentProcessor:
         output_dir: str | None = None,
         target_lang: str = "en",
         source_lang: str = "auto",
-        model_name: str = "gemma3:1b",
-        model_path: str | None = None,
         use_ocr: bool = False,
         parse_engine: str = "auto",
         temperature: float = 0.3,
@@ -64,7 +62,7 @@ class DocumentProcessor:
         font_name: str | None = None,
         font_size: int = 11,
         margin: float = 20.0,
-        cache_dir: str | None = None,
+        config: ConfigManager | None = None,
         verbose: bool = False,
     ):
         """Initialize document processor.
@@ -73,8 +71,6 @@ class DocumentProcessor:
             output_dir: Output directory.
             target_lang: Target language code.
             source_lang: Source language code.
-            model_name: Translation model name.
-            model_path: Direct path to GGUF model file.
             use_ocr: Use OCR for scanning.
             parse_engine: Parsing engine.
             temperature: Translation temperature.
@@ -82,14 +78,12 @@ class DocumentProcessor:
             font_name: Output PDF font.
             font_size: Output PDF font size.
             margin: Output PDF margin.
-            cache_dir: Model cache directory.
+            config: Configuration manager.
             verbose: Enable verbose output.
         """
         self.output_dir = output_dir
         self.target_lang = target_lang
         self.source_lang = source_lang
-        self.model_name = model_name
-        self.model_path = model_path
         self.use_ocr = use_ocr
         self.parse_engine = parse_engine
         self.temperature = temperature
@@ -97,7 +91,7 @@ class DocumentProcessor:
         self.font_name = font_name
         self.font_size = font_size
         self.margin = margin
-        self.cache_dir = cache_dir
+        self.config = config if config else ConfigManager()
         self.verbose = verbose
 
     def process(self, file_path: str) -> ProcessingResult:
@@ -159,10 +153,8 @@ class DocumentProcessor:
                 markdown,
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
-                model_name=self.model_name,
-                model_path=self.model_path,
                 temperature=self.temperature,
-                cache_dir=self.cache_dir,
+                config=self.config,
             )
 
             translation_time = time.time() - translation_start
@@ -206,7 +198,7 @@ class DocumentProcessor:
                     "source_file": str(file_path),
                     "source_lang": self.source_lang,
                     "target_lang": self.target_lang,
-                    "model": self.model_name,
+                    "model": self.config.get("model", "unknown"),
                     "parse_engine": parse_result.get("engine", "unknown"),
                 },
             )
@@ -258,8 +250,6 @@ def process_document(
     output_dir: str | None = None,
     target_lang: str = "en",
     source_lang: str = "auto",
-    model_name: str = "gemma3:1b",
-    model_path: str | None = None,
     use_ocr: bool = False,
     parse_engine: str = "auto",
     temperature: float = 0.3,
@@ -267,7 +257,7 @@ def process_document(
     font_name: str | None = None,
     font_size: int = 11,
     margin: float = 20.0,
-    cache_dir: str | None = None,
+    config: ConfigManager | None = None,
     verbose: bool = False,
 ) -> ProcessingResult:
     """Process a document file through the full pipeline.
@@ -277,8 +267,6 @@ def process_document(
         output_dir: Output directory.
         target_lang: Target language code.
         source_lang: Source language code.
-        model_name: Translation model name.
-        model_path: Direct path to GGUF model file.
         use_ocr: Use OCR for scanning.
         parse_engine: Parsing engine.
         temperature: Translation temperature.
@@ -286,7 +274,7 @@ def process_document(
         font_name: Output PDF font.
         font_size: Output PDF font size.
         margin: Output PDF margin.
-        cache_dir: Model cache directory.
+        config: Configuration manager.
         verbose: Enable verbose output.
 
     Returns:
@@ -296,8 +284,6 @@ def process_document(
         output_dir=output_dir,
         target_lang=target_lang,
         source_lang=source_lang,
-        model_name=model_name,
-        model_path=model_path,
         use_ocr=use_ocr,
         parse_engine=parse_engine,
         temperature=temperature,
@@ -305,7 +291,7 @@ def process_document(
         font_name=font_name,
         font_size=font_size,
         margin=margin,
-        cache_dir=cache_dir,
+        config=config,
         verbose=verbose,
     )
 

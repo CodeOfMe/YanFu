@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMutex, QMutexLocker, QObject, QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QMutex, QMutexLocker, QObject, Qt, QThread, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .core import DocumentProcessor
-from .translator import BUNDLED_MODELS_DIR, MODEL_DEFINITIONS, ModelManager
+from .translator import ConfigManager, MODEL_PRESETS, OllamaTranslator
 from .utils import LANGUAGE_MAP, find_documents
 
 # ---------------------------------------------------------------------------
@@ -53,8 +53,6 @@ class TranslationTask:
     file_path: str
     target_lang: str = "en"
     source_lang: str = "auto"
-    model_name: str = "gemma3:1b"
-    model_path: str | None = None
     use_ocr: bool = False
     parse_engine: str = "auto"
     temperature: float = 0.3
@@ -62,7 +60,7 @@ class TranslationTask:
     font_name: str | None = None
     font_size: int = 11
     margin: float = 20.0
-    cache_dir: str | None = None
+    config: ConfigManager | None = None
 
 
 @dataclass
@@ -136,8 +134,6 @@ class TranslationWorker(QThread):
                     output_dir=self.output_dir,
                     target_lang=task.target_lang,
                     source_lang=task.source_lang,
-                    model_name=task.model_name,
-                    model_path=task.model_path,
                     use_ocr=task.use_ocr,
                     parse_engine=task.parse_engine,
                     temperature=task.temperature,
@@ -145,7 +141,7 @@ class TranslationWorker(QThread):
                     font_name=task.font_name,
                     font_size=task.font_size,
                     margin=task.margin,
-                    cache_dir=str(BUNDLED_MODELS_DIR) if BUNDLED_MODELS_DIR.exists() else task.cache_dir,
+                    config=task.config,
                     verbose=False,
                 )
 
@@ -197,21 +193,47 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(450)
+        self.config = ConfigManager()
         self._build_ui()
         self._load_settings()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
+        # Provider settings
+        provider_group = QGroupBox("Translation Provider")
+        provider_layout = QFormLayout()
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItem("Ollama (Local)", "ollama")
+        self.provider_combo.addItem("OpenAI (Cloud)", "openai")
+        self.provider_combo.addItem("Custom OpenAI-Compatible", "custom")
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        provider_layout.addRow("Provider:", self.provider_combo)
+
+        self.base_url_edit = QLineEdit()
+        self.base_url_edit.setPlaceholderText("http://localhost:11434")
+        provider_layout.addRow("Base URL:", self.base_url_edit)
+
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        self.api_key_edit.setPlaceholderText("sk-...")
+        provider_layout.addRow("API Key:", self.api_key_edit)
+
+        self.model_combo = QComboBox()
+        provider_layout.addRow("Model:", self.model_combo)
+
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self._test_connection)
+        provider_layout.addRow("", self.test_btn)
+
+        provider_group.setLayout(provider_layout)
+        layout.addWidget(provider_group)
+
         # Translation settings
         trans_group = QGroupBox("Translation Settings")
         trans_layout = QFormLayout()
-
-        self.model_combo = QComboBox()
-        for model_id, info in MODEL_DEFINITIONS.items():
-            self.model_combo.addItem(f"{model_id} ({info['name']}, ~{info['size_mb']}MB)")
-        trans_layout.addRow("Model:", self.model_combo)
 
         self.source_lang_combo = QComboBox()
         self.source_lang_combo.addItem("Auto Detect", "auto")
@@ -261,21 +283,6 @@ class SettingsDialog(QDialog):
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
-        # Model management
-        model_group = QGroupBox("Model Management")
-        model_layout = QHBoxLayout()
-
-        self.download_btn = QPushButton("Download Model")
-        self.download_btn.clicked.connect(self._download_model)
-        model_layout.addWidget(self.download_btn)
-
-        self.cleanup_btn = QPushButton("Cleanup Models")
-        self.cleanup_btn.clicked.connect(self._cleanup_models)
-        model_layout.addWidget(self.cleanup_btn)
-
-        model_group.setLayout(model_layout)
-        layout.addWidget(model_group)
-
         # Buttons
         btn_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
@@ -287,84 +294,97 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
-    def _load_settings(self):
-        settings = QSettings("CodeOfMe", "YanFu")
-        model_idx = settings.value("model_index", 0, type=int)
-        self.model_combo.setCurrentIndex(min(model_idx, self.model_combo.count() - 1))
+        self._on_provider_changed()
 
-        source_lang = settings.value("source_lang", "auto")
+    def _on_provider_changed(self):
+        """Update UI based on selected provider."""
+        provider = self.provider_combo.currentData()
+        if provider == "ollama":
+            self.base_url_edit.setEnabled(True)
+            self.api_key_edit.setEnabled(False)
+            self.model_combo.clear()
+            for key, info in MODEL_PRESETS.items():
+                if info["provider"] == "ollama":
+                    self.model_combo.addItem(f"{key} - {info['description']}", key)
+        elif provider == "openai":
+            self.base_url_edit.setEnabled(False)
+            self.base_url_edit.setText("https://api.openai.com")
+            self.api_key_edit.setEnabled(True)
+            self.model_combo.clear()
+            for key, info in MODEL_PRESETS.items():
+                if info["provider"] == "openai":
+                    self.model_combo.addItem(f"{key} - {info['description']}", key)
+        else:
+            self.base_url_edit.setEnabled(True)
+            self.base_url_edit.clear()
+            self.api_key_edit.setEnabled(True)
+            self.model_combo.clear()
+            self.model_combo.setEditable(True)
+            self.model_combo.setEditText("custom-model")
+
+    def _load_settings(self):
+        provider = self.config.get("provider", "ollama")
+        idx = self.provider_combo.findData(provider)
+        if idx >= 0:
+            self.provider_combo.setCurrentIndex(idx)
+
+        self.base_url_edit.setText(self.config.get("base_url", "http://localhost:11434"))
+        self.api_key_edit.setText(self.config.get("api_key", ""))
+
+        model = self.config.get("model", "")
+        idx = self.model_combo.findData(model)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        elif model:
+            self.model_combo.setEditText(model)
+
+        source_lang = self.config.get("source_lang", "auto")
         idx = self.source_lang_combo.findData(source_lang)
         if idx >= 0:
             self.source_lang_combo.setCurrentIndex(idx)
 
-        target_lang = settings.value("target_lang", "en")
+        target_lang = self.config.get("target_lang", "en")
         idx = self.target_lang_combo.findData(target_lang)
         if idx >= 0:
             self.target_lang_combo.setCurrentIndex(idx)
 
-        self.temperature_spin.setValue(settings.value("temperature", 0.3, type=float))
-        self.ocr_check.setChecked(settings.value("use_ocr", False, type=bool))
-        self.page_size_combo.setCurrentText(settings.value("page_size", "A4"))
-        self.font_size_spin.setValue(settings.value("font_size", 11, type=int))
-        self.margin_spin.setValue(settings.value("margin", 20.0, type=float))
+        self.temperature_spin.setValue(self.config.get("temperature", 0.3))
+        self.ocr_check.setChecked(self.config.get("use_ocr", False))
+        self.page_size_combo.setCurrentText(self.config.get("page_size", "A4"))
+        self.font_size_spin.setValue(self.config.get("font_size", 11))
+        self.margin_spin.setValue(self.config.get("margin", 20.0))
 
     def save_settings(self):
-        settings = QSettings("CodeOfMe", "YanFu")
-        settings.setValue("model_index", self.model_combo.currentIndex())
-        settings.setValue("source_lang", self.source_lang_combo.currentData())
-        settings.setValue("target_lang", self.target_lang_combo.currentData())
-        settings.setValue("temperature", self.temperature_spin.value())
-        settings.setValue("use_ocr", self.ocr_check.isChecked())
-        settings.setValue("page_size", self.page_size_combo.currentText())
-        settings.setValue("font_size", self.font_size_spin.value())
-        settings.setValue("margin", self.margin_spin.value())
+        self.config.set("provider", self.provider_combo.currentData())
+        self.config.set("base_url", self.base_url_edit.text())
+        self.config.set("api_key", self.api_key_edit.text())
+        
+        model_data = self.model_combo.currentData()
+        self.config.set("model", model_data if model_data else self.model_combo.currentText())
+        
+        self.config.set("source_lang", self.source_lang_combo.currentData())
+        self.config.set("target_lang", self.target_lang_combo.currentData())
+        self.config.set("temperature", self.temperature_spin.value())
+        self.config.set("use_ocr", self.ocr_check.isChecked())
+        self.config.set("page_size", self.page_size_combo.currentText())
+        self.config.set("font_size", self.font_size_spin.value())
+        self.config.set("margin", self.margin_spin.value())
+        
+        self.config.save_config()
 
-    def get_model_name(self) -> str:
-        text = self.model_combo.currentText()
-        return text.split(" ")[0]
-
-    def _download_model(self):
-        model_name = self.get_model_name()
-        try:
-            mm = ModelManager()
-            if mm.is_model_downloaded(model_name):
-                QMessageBox.information(self, "Model", f"Model '{model_name}' is already downloaded.")
-                return
-
-            reply = QMessageBox.question(
-                self,
-                "Download Model",
-                f"Download '{model_name}' (~{MODEL_DEFINITIONS[model_name]['size_mb']}MB)?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-
-            if reply == QMessageBox.Yes:
-                self.download_btn.setEnabled(False)
-                self.download_btn.setText("Downloading...")
-                QApplication.processEvents()
-                path = mm.download_model(model_name)
-                self.download_btn.setEnabled(True)
-                self.download_btn.setText("Download Model")
-                QMessageBox.information(self, "Success", f"Model downloaded to:\n{path}")
-        except Exception as e:
-            self.download_btn.setEnabled(True)
-            self.download_btn.setText("Download Model")
-            QMessageBox.critical(self, "Error", f"Failed to download model:\n{str(e)}")
-
-    def _cleanup_models(self):
-        reply = QMessageBox.warning(
-            self,
-            "Cleanup Models",
-            "Remove all downloaded models?",
-            QMessageBox.Yes | QMessageBox.No,
+    def _test_connection(self):
+        """Test connection to the configured provider."""
+        translator = OllamaTranslator(
+            provider=self.provider_combo.currentData(),
+            base_url=self.base_url_edit.text(),
+            model=self.model_combo.currentData() or self.model_combo.currentText(),
+            api_key=self.api_key_edit.text(),
         )
-        if reply == QMessageBox.Yes:
-            try:
-                mm = ModelManager()
-                mm.cleanup()
-                QMessageBox.information(self, "Success", "All models removed.")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to cleanup: {str(e)}")
+        success, message = translator.test_connection()
+        if success:
+            QMessageBox.information(self, "Connection Test", f"✓ {message}")
+        else:
+            QMessageBox.warning(self, "Connection Test", f"✗ {message}")
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +403,7 @@ class YanFuMainWindow(QMainWindow):
         self._worker: TranslationWorker | None = None
         self._task_results: list[TaskResult] = []
         self._selected_files: list[str] = []
+        self.config = ConfigManager()
 
         self._build_ui()
         self._build_menu()
@@ -497,12 +518,8 @@ class YanFuMainWindow(QMainWindow):
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self._open_settings)
 
-        download_action = tools_menu.addAction("Download Model...")
-        download_action.triggered.connect(self._download_model_dialog)
-
-        tools_menu.addSeparator()
-        cleanup_action = tools_menu.addAction("Cleanup Models...")
-        cleanup_action.triggered.connect(self._cleanup_models_dialog)
+        config_action = tools_menu.addAction("Configuration Wizard...")
+        config_action.triggered.connect(self._run_config_wizard)
 
         help_menu = menubar.addMenu("&Help")
         about_action = help_menu.addAction("About")
@@ -575,6 +592,7 @@ class YanFuMainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.Accepted:
             dialog.save_settings()
+            self.config = dialog.config
             self._log("Settings saved")
 
     def _start_translation(self):
@@ -582,28 +600,27 @@ class YanFuMainWindow(QMainWindow):
             QMessageBox.warning(self, "No Files", "Please add files to translate.")
             return
 
+        if not self.config.is_configured():
+            QMessageBox.warning(self, "Not Configured", "Please configure your translation provider in Settings.")
+            return
+
         output_dir = self.output_edit.text()
         if not output_dir:
             output_dir = str(Path(self._selected_files[0]).parent)
             self.output_edit.setText(output_dir)
 
-        settings = QSettings("CodeOfMe", "YanFu")
-        model_names = list(MODEL_DEFINITIONS.keys())
-        model_idx = settings.value("model_index", 0, type=int)
-        model_name = model_names[min(model_idx, len(model_names) - 1)]
-
         tasks = []
         for f in self._selected_files:
             task = TranslationTask(
                 file_path=f,
-                target_lang=settings.value("target_lang", "en"),
-                source_lang=settings.value("source_lang", "auto"),
-                model_name=model_name,
-                use_ocr=settings.value("use_ocr", False, type=bool),
-                temperature=settings.value("temperature", 0.3, type=float),
-                page_size=settings.value("page_size", "A4"),
-                font_size=settings.value("font_size", 11, type=int),
-                margin=settings.value("margin", 20.0, type=float),
+                target_lang=self.config.get("target_lang", "en"),
+                source_lang=self.config.get("source_lang", "auto"),
+                use_ocr=self.config.get("use_ocr", False),
+                temperature=self.config.get("temperature", 0.3),
+                page_size=self.config.get("page_size", "A4"),
+                font_size=self.config.get("font_size", 11),
+                margin=self.config.get("margin", 20.0),
+                config=self.config,
             )
             tasks.append(task)
 
@@ -662,13 +679,11 @@ class YanFuMainWindow(QMainWindow):
         cursor.movePosition(QTextCursor.End)
         self.log_text.setTextCursor(cursor)
 
-    def _download_model_dialog(self):
-        dialog = SettingsDialog(self)
-        dialog._download_model()
-
-    def _cleanup_models_dialog(self):
-        dialog = SettingsDialog(self)
-        dialog._cleanup_models()
+    def _run_config_wizard(self):
+        from .config_wizard import run_config_wizard
+        run_config_wizard()
+        self.config = ConfigManager()
+        self._log("Configuration wizard completed.")
 
     def _show_about(self):
         QMessageBox.about(
@@ -676,8 +691,7 @@ class YanFuMainWindow(QMainWindow):
             "About YanFu",
             f"<h2>YanFu v{__version__}</h2>"
             "<p>PDF/CAJ Document Translator</p>"
-            "<p>Translate documents using local LLMs with layout-preserving PDF generation.</p>"
-            "<p>Zero-configuration: Models auto-download on first use.</p>"
+            "<p>Translate documents using Ollama or OpenAI-compatible APIs with layout-preserving PDF generation.</p>"
             "<p>Licensed under GPL-3.0-or-later</p>"
             "<p><a href='https://github.com/CodeOfMe/YanFu'>https://github.com/CodeOfMe/YanFu</a></p>",
         )

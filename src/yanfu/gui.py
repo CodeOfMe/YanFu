@@ -341,11 +341,24 @@ class MarkdownViewer(QWidget):
     def _build_ui(self, title: str):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        
         self._editor = QTextEdit()
         self._editor.setReadOnly(True)
         self._editor.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
         layout.addWidget(self._editor)
+
+    def clear(self):
+        self._raw_md = ""
+        self._editor.clear()
+
+    def setReadOnly(self, ro: bool):
+        self._editor.setReadOnly(ro)
+
+    def setPlainText(self, text: str):
+        self._raw_md = text
+        self._editor.setPlainText(text)
+
+    def setPlaceholderText(self, text: str):
+        self._editor.setPlaceholderText(text)
 
     def set_markdown(self, md: str):
         self._raw_md = md
@@ -1131,8 +1144,8 @@ class YanFuMainWindow(QMainWindow):
         right_layout.addWidget(self.progress_bar)
 
         self.md_editor = MarkdownViewer()
-        self.md_editor.editor().setReadOnly(False)
-        self.md_editor.editor().setPlaceholderText("Translation will appear here...")
+        self.md_editor.setReadOnly(False)
+        self.md_editor.setPlaceholderText("Translation will appear here...")
         right_layout.addWidget(self.md_editor)
         main_splitter.addWidget(right_widget)
 

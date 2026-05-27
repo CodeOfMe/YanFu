@@ -510,8 +510,8 @@ class _EngineModelDownloader(QThread):
                 cache_dir = Path(user_cache_dir("datalab")) / "models"
                 print(f"\n[YanFu] 📁 Surya cache: {cache_dir}")
                 print(f"[YanFu] 📁 Downloading from: https://models.datalab.to")
-                self.signals.progress.emit(f"Surya cache: {cache_dir}", 0, 100)
-                self.signals.progress.emit("Downloading (check terminal for progress)...", 5, 100)
+                self.signals.progress.emit(f"Surya cache: {cache_dir}")
+                self.signals.progress.emit("Downloading (check terminal for progress)...")
                 
                 # Enable huggingface progress bars
                 from huggingface_hub.utils import enable_progress_bars

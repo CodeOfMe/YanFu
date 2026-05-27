@@ -72,6 +72,9 @@ def clean_markdown(text: str) -> str:
     # Remove trailing whitespace from lines
     text = "\n".join(line.rstrip() for line in text.split("\n"))
 
+    # Clean up docling formula-not-decoded placeholders
+    text = re.sub(r"<!--\s*formula-not-decoded\s*-->", "[Formula]", text)
+
     return text.strip()
 
 

@@ -390,13 +390,23 @@ class PDFParser:
     def _parse_with_docling(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
         """Parse PDF using Docling."""
         try:
-            from docling.document_converter import DocumentConverter
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
         except ImportError as e:
             raise ImportError("Install docling: pip install docling") from e
 
         logger.debug(f"Parsing PDF with Docling: {pdf_path}")
 
-        converter = DocumentConverter()
+        # Enable formula/code enrichment
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_formula_enrichment = True
+        pipeline_options.do_code_enrichment = True
+
+        converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
         result = converter.convert(pdf_path)
 
         markdown = result.document.export_to_markdown()

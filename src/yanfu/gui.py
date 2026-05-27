@@ -504,14 +504,14 @@ class _EngineModelDownloader(QThread):
                     if cache.exists():
                         shutil.rmtree(cache)
                         self.signals.progress.emit("Cache cleared")
-                cache_dir = Path(user_cache_dir("datalab")) / "models"
-                print(f"\n[YanFu] 📁 Model cache: {cache_dir}")
-                self.signals.progress.emit(f"Cache: {cache_dir}")
-                self.signals.progress.emit("Downloading marker models (~3GB)...")
-                from marker.models import create_model_dict
-                create_model_dict()
-                print(f"[YanFu] ✅ Marker models ready at: {cache_dir}")
-                self.signals.finished.emit(f"Marker models ready\n📁 {cache_dir}")
+                from .model_download import ensure_marker_models
+                success, msg = ensure_marker_models(
+                    progress_callback=lambda cur, tot, m: self.signals.progress.emit(m, int(cur*100/tot), 100)
+                )
+                if success:
+                    self.signals.finished.emit(msg)
+                else:
+                    self.signals.error.emit(msg)
 
             elif self._engine == "docling":
                 if self._force:

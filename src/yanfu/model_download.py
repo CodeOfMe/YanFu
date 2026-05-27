@@ -1,54 +1,77 @@
-"""YanFu - Download surya/marker models from ModelScope.
+"""YanFu - Download surya/marker models.
 
-For mainland China users who cannot access models.datalab.to.
-Downloads surya model files from ModelScope mirrors and places them
-in the correct cache directory.
+Downloads model files from models.datalab.to (HTTP, works from China)
+and places them in the correct surya cache directory.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
 
+import requests
 from huggingface_hub.utils import tqdm
 
 logger = logging.getLogger("yanfu")
 
-# ModelScope model IDs for surya components
-SURYA_MODELSCOPE_MODELS = {
+# Model definitions with their S3 paths
+SURYA_MODELS = {
     "layout": {
-        "model_id": "datalab/surya_layout",
-        "revision": "master",
-        "cache_subdir": "layout/2025_09_23",
-        "description": "Layout detection model",
+        "path": "layout/2025_09_23",
+        "files": [
+            "model.safetensors",
+            "config.json",
+            "preprocessor_config.json",
+            "tokenizer_config.json",
+            "vocab_math.json",
+            "special_tokens_map.json",
+            "specials_dict.json",
+        ],
+        "desc": "Layout detection (~1.4GB)",
     },
     "recognition": {
-        "model_id": "datalab/surya_recognition",
-        "revision": "master",
-        "cache_subdir": "text_recognition/2025_09_23",
-        "description": "Text recognition model",
+        "path": "text_recognition/2025_09_23",
+        "files": [
+            "model.safetensors",
+            "config.json",
+            "preprocessor_config.json",
+            "tokenizer_config.json",
+            "vocab_math.json",
+            "special_tokens_map.json",
+            "specials_dict.json",
+        ],
+        "desc": "Text recognition (~1.4GB)",
     },
     "detection": {
-        "model_id": "datalab/surya_detection",
-        "revision": "master",
-        "cache_subdir": "text_detection/2025_05_07",
-        "description": "Text detection model",
+        "path": "text_detection/2025_05_07",
+        "files": [
+            "model.safetensors",
+            "config.json",
+            "preprocessor_config.json",
+        ],
+        "desc": "Text detection (~100MB)",
     },
     "table_rec": {
-        "model_id": "datalab/surya_table_rec",
-        "revision": "master",
-        "cache_subdir": "table_recognition/2025_02_18",
-        "description": "Table recognition model",
+        "path": "table_recognition/2025_02_18",
+        "files": [
+            "model.safetensors",
+            "config.json",
+            "generation_config.json",
+        ],
+        "desc": "Table recognition (~500MB)",
     },
     "ocr_error": {
-        "model_id": "datalab/surya_ocr_error",
-        "revision": "master",
-        "cache_subdir": "ocr_error_detection/2025_02_18",
-        "description": "OCR error detection model",
+        "path": "ocr_error_detection/2025_02_18",
+        "files": [
+            "model.safetensors",
+            "config.json",
+        ],
+        "desc": "OCR error detection (~300MB)",
     },
 }
+
+BASE_URL = "https://models.datalab.to"
 
 
 def get_surya_cache_dir() -> Path:
@@ -57,11 +80,14 @@ def get_surya_cache_dir() -> Path:
     return Path(user_cache_dir("datalab")) / "models"
 
 
-def download_surya_from_modelscope(
+def download_surya_models(
     progress_callback=None,
     force: bool = False,
 ) -> tuple[bool, str]:
-    """Download all surya models from ModelScope mirrors.
+    """Download all surya models directly via HTTP.
+
+    Downloads from https://models.datalab.to and saves to the
+    platform-appropriate cache directory.
 
     Args:
         progress_callback: Optional callback(current, total, message).
@@ -70,112 +96,103 @@ def download_surya_from_modelscope(
     Returns:
         Tuple of (success, message).
     """
-    try:
-        from modelscope.hub.snapshot_download import snapshot_download
-    except ImportError:
-        return False, "ModelScope not installed. Run: pip install modelscope"
-
     cache_dir = get_surya_cache_dir()
-    total_models = len(SURYA_MODELSCOPE_MODELS)
+    total_models = len(SURYA_MODELS)
     downloaded = 0
     skipped = 0
-    failed = []
+    failed_models = []
 
     print("\n" + "=" * 60)
-    print("[YanFu] Downloading surya models from ModelScope...")
+    print("[YanFu] Downloading surya/marker models")
     print(f"[YanFu] Cache: {cache_dir}")
+    print(f"[YanFu] Source: {BASE_URL}")
     print("=" * 60)
 
-    for i, (name, info) in enumerate(SURYA_MODELSCOPE_MODELS.items(), 1):
-        target_dir = cache_dir / info["cache_subdir"]
-        msg = f"[{i}/{total_models}] {info['description']}"
+    for i, (name, info) in enumerate(SURYA_MODELS.items(), 1):
+        target_dir = cache_dir / info["path"]
+        msg = f"[{i}/{total_models}] {info['desc']}"
 
         if progress_callback:
             progress_callback(i, total_models, msg)
 
         print(f"\n{msg}")
-        print(f"  ModelScope: {info['model_id']}")
-        print(f"  Cache:      {target_dir}")
+        print(f"  Target: {target_dir}")
 
-        # Check if already downloaded
-        if target_dir.exists() and any(target_dir.iterdir()) and not force:
-            print(f"  ✓ Already cached")
-            skipped += 1
-            continue
+        # Check cache
+        if target_dir.exists() and not force:
+            existing = list(target_dir.glob("model.*"))
+            if existing:
+                size_mb = sum(f.stat().st_size for f in existing) / 1024 / 1024
+                print(f"  ✓ Already cached ({size_mb:.0f}MB)")
+                skipped += 1
+                continue
 
         target_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Download from ModelScope
-            # Use environment variable for HF mirror compatibility
-            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+            for filename in info["files"]:
+                url = f"{BASE_URL}/{info['path']}/{filename}"
+                filepath = target_dir / filename
+                print(f"  Download: {filename}", end="", flush=True)
+                _download_file(url, filepath)
+                size_mb = filepath.stat().st_size / 1024 / 1024
+                print(f" ({size_mb:.0f}MB)")
 
-            snapshot_download(
-                model_id=info["model_id"],
-                revision=info["revision"],
-                cache_dir=str(target_dir),
-                local_dir=str(target_dir),
-            )
             print(f"  ✓ Downloaded successfully")
             downloaded += 1
         except Exception as e:
             print(f"  ✗ Failed: {e}")
-            failed.append(name)
+            failed_models.append(name)
 
     print("\n" + "=" * 60)
     summary = f"Downloaded: {downloaded}, Cached: {skipped}"
-    if failed:
-        summary += f", Failed: {len(failed)} ({', '.join(failed)})"
+    if failed_models:
+        summary += f", Failed: {len(failed_models)} ({', '.join(failed_models)})"
     print(f"[YanFu] {summary}")
+    print(f"[YanFu] Cache: {cache_dir}")
     print("=" * 60)
 
-    if failed:
+    if failed_models:
         return False, f"Partial download: {summary}"
-    return True, f"All models ready: {summary}"
+    return True, f"All models ready in {cache_dir}"
 
 
-def download_surya_via_marker(
-    progress_callback=None,
-) -> tuple[bool, str]:
-    """Download surya models using marker-pdf's built-in downloader.
+def _download_file(url: str, filepath: Path, chunk_size: int = 8 * 1024 * 1024):
+    """Download a file with progress bar."""
+    resp = requests.get(url, stream=True, timeout=300)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0))
+    
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(filepath, "wb") as f:
+        with tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc="  ") as pbar:
+            for chunk in resp.iter_content(chunk_size=chunk_size):
+                f.write(chunk)
+                pbar.update(len(chunk))
 
-    Tries ModelScope first (HF_ENDPOINT=hf-mirror.com), falls back
-    to direct download from models.datalab.to.
 
-    Args:
-        progress_callback: Optional callback(current, total, message).
-
+def ensure_marker_models(progress_callback=None) -> tuple[bool, str]:
+    """Ensure marker-pdf models are available (download if needed).
+    
+    First checks cache, then downloads from models.datalab.to.
+    After download, verifies marker can load the models.
+    
     Returns:
         Tuple of (success, message).
     """
-    # Use HF mirror for mainland China
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+    # Step 1: Download model files
+    success, msg = download_surya_models(progress_callback=progress_callback)
+    if not success:
+        return False, msg
 
-    # Enable progress bars
-    from huggingface_hub.utils import enable_progress_bars
-    enable_progress_bars()
-
-    print("\n" + "=" * 60)
-    print("[YanFu] Downloading marker-pdf/surya models...")
-    print("[YanFu] Using HF mirror: https://hf-mirror.com")
-    print("=" * 60)
-    print()
-
+    # Step 2: Verify marker can load them
+    if progress_callback:
+        progress_callback(0, 1, "Verifying marker can load models...")
+    
     try:
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
         from marker.models import create_model_dict
-
-        if progress_callback:
-            progress_callback(0, 100, "Loading marker-pdf models...")
-
-        artifact_dict = create_model_dict()
-
-        print("\n[YanFu] ✅ All models loaded successfully!")
-        print("=" * 60)
-        return True, "Models loaded successfully"
+        create_model_dict()
+        return True, "Models downloaded and verified"
     except Exception as e:
-        print(f"\n[YanFu] ❌ Download failed: {e}")
-        print(f"[YanFu] Try downloading from ModelScope manually:")
-        print(f"  pip install modelscope")
-        print(f"  python -m yanfu.download_models --modelscope")
-        return False, str(e)
+        return False, f"Models downloaded but marker failed to load: {e}"

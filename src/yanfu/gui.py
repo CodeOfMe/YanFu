@@ -1101,6 +1101,14 @@ class YanFuMainWindow(QMainWindow):
         mid_header = QHBoxLayout()
         mid_header.addWidget(QLabel("📝 Parsed Markdown"))
         mid_header.addStretch()
+        self.md_clear_btn = QPushButton("✕ Clear")
+        self.md_clear_btn.setFixedWidth(60)
+        self.md_clear_btn.clicked.connect(self._clear_parsed)
+        mid_header.addWidget(self.md_clear_btn)
+        self.parse_btn = QPushButton("📄 Parse PDF")
+        self.parse_btn.clicked.connect(self._parse_only)
+        self.parse_btn.setEnabled(False)
+        mid_header.addWidget(self.parse_btn)
         self.md_toggle_btn = QPushButton("🔄 Plain")
         self.md_toggle_btn.setFixedWidth(80)
         self.md_toggle_btn.clicked.connect(lambda: self._toggle_view("md"))
@@ -1117,6 +1125,11 @@ class YanFuMainWindow(QMainWindow):
         right_header = QHBoxLayout()
         right_header.addWidget(QLabel("🌐 Translation"))
         right_header.addStretch()
+        self.tl_clear_btn = QPushButton("✕ Clear")
+        self.tl_clear_btn.setFixedWidth(60)
+        self.tl_clear_btn.clicked.connect(self._clear_translation)
+        self.tl_clear_btn.setEnabled(False)
+        right_header.addWidget(self.tl_clear_btn)
         self.sync_scroll_check = QCheckBox("Sync Scroll")
         self.sync_scroll_check.setChecked(True)
         self.sync_scroll_check.toggled.connect(self._on_sync_scroll_toggled)
@@ -1231,6 +1244,71 @@ class YanFuMainWindow(QMainWindow):
             self.md_editor.toggle_view()
             self.tl_toggle_btn.setText("🔄 Rendered" if self.md_editor._rendered else "🔄 Plain")
 
+    def _parse_only(self):
+        """Parse PDF without translating."""
+        if not self._current_pdf_path:
+            return
+        self._parsed_markdown = ""
+        self._current_md_content = ""
+        self.md_editor.clear()
+        self.save_md_btn.setEnabled(False)
+        self.save_pdf_btn.setEnabled(False)
+        self.tl_clear_btn.setEnabled(False)
+        print("\n" + "=" * 60)
+        print("[YanFu] Parsing PDF only...")
+        print(f"[YanFu] Input: {self._current_pdf_path}")
+        print("=" * 60)
+        self._run_parse()
+
+    def _clear_parsed(self):
+        """Clear parsed markdown."""
+        self._parsed_markdown = ""
+        self.md_preview.clear()
+        self.md_editor.clear()
+        self.translate_btn.setEnabled(False)
+        self.save_md_btn.setEnabled(False)
+        self.save_pdf_btn.setEnabled(False)
+        self.tl_clear_btn.setEnabled(False)
+        print("[YanFu] Parsed markdown cleared")
+
+    def _clear_translation(self):
+        """Clear translation output."""
+        self._current_md_content = ""
+        self.md_editor.clear()
+        self.save_md_btn.setEnabled(False)
+        self.save_pdf_btn.setEnabled(False)
+        self.tl_clear_btn.setEnabled(False)
+        print("[YanFu] Translation cleared")
+
+    def _run_parse(self):
+        """Start parse worker."""
+        output_dir = str(Path(self._current_pdf_path).parent)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.parse_btn.setEnabled(False)
+        self.translate_btn.setEnabled(False)
+        self.status.showMessage("Parsing...")
+        self._parse_worker = ParseWorker(
+            file_path=self._current_pdf_path, output_dir=output_dir,
+            parse_engine=self.config.get("parse_engine", "marker"),
+            device=self.config.get("device", "auto"),
+        )
+        self._workers.append(self._parse_worker)
+        self._parse_worker.signals.finished.connect(self._on_parse_done)
+        self._parse_worker.signals.error.connect(self._on_parse_error)
+        self._parse_worker.finished.connect(lambda: self._workers.remove(self._parse_worker) if self._parse_worker in self._workers else None)
+        self._parse_worker.start()
+
+    def _on_parse_done(self, result: ParseResult):
+        """Parse complete — show in preview, enable translate."""
+        print(f"\n[YanFu] ✅ Parsed: {result.engine}, {result.page_count}p, {len(result.images)}img, {len(result.markdown)} chars")
+        self._parsed_markdown = result.markdown
+        self.md_preview.set_markdown(result.markdown)
+        self.translate_btn.setEnabled(bool(self._parsed_markdown.strip()))
+        self.parse_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status.showMessage(f"Parsed: {result.page_count}p, {len(result.markdown)} chars")
+
     def _open_pdf(self):
         """Open a PDF file."""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1251,6 +1329,7 @@ class YanFuMainWindow(QMainWindow):
             self._parsed_markdown = ""
             self._current_md_content = ""
             self.md_editor.clear()
+            self.parse_btn.setEnabled(True)
             self.translate_btn.setEnabled(False)
             self.save_md_btn.setEnabled(False)
             self.save_pdf_btn.setEnabled(False)
@@ -1321,48 +1400,32 @@ class YanFuMainWindow(QMainWindow):
         self.status.showMessage("Parse failed")
 
     def _translate_current(self):
-        """Translate - parses PDF first if needed, then translates."""
+        """Translate — parses first if needed, then translates."""
         if not self._current_pdf_path:
             QMessageBox.warning(self, "No PDF", "Please open a PDF first.")
             return
-
         if not self.config.is_configured():
-            QMessageBox.warning(self, "Not Configured", "Please configure your translation provider in Settings.")
+            QMessageBox.warning(self, "Not Configured", "Please configure Settings first.")
             return
-
         if not self._parsed_markdown:
-            # Need to parse first, then translate
             self._parse_then_translate()
         else:
             self._do_translate()
 
     def _parse_then_translate(self):
-        """Parse PDF first, then automatically translate."""
+        """Parse first, then auto translate."""
         print("\n" + "=" * 60)
-        print("[YanFu] Parsing + Translating...")
-        print(f"[YanFu] Input: {self._current_pdf_path}")
-        print(f"[YanFu] Provider: {self.config.get('provider')}")
-        print(f"[YanFu] Model: {self.config.get('model')}")
-        print(f"[YanFu] Source: {self.config.get('source_lang', 'auto')} → Target: {self.config.get('target_lang', 'en')}")
+        print("[YanFu] Parse + Translate...")
+        print(f"[YanFu] Engine: {self.config.get('parse_engine','auto')}")
+        print(f"[YanFu] Model:  {self.config.get('model')}")
         print("=" * 60)
-
         output_dir = str(Path(self._current_pdf_path).parent)
-        
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.parse_btn.setEnabled(False)
         self.translate_btn.setEnabled(False)
-        self.status.showMessage("Parsing PDF...")
-
-        # Wait for any previous worker
-        if self._parse_worker and self._parse_worker.isRunning():
-            self._parse_worker.quit()
-            self._parse_worker.wait(1000)
-
         self._parse_worker = ParseWorker(
-            file_path=self._current_pdf_path,
-            output_dir=output_dir,
-            use_ocr=self.config.get("use_ocr", False),
-            parse_engine=self.config.get("parse_engine", "pymupdf"),
+            file_path=self._current_pdf_path, output_dir=output_dir,
+            parse_engine=self.config.get("parse_engine", "marker"),
             device=self.config.get("device", "auto"),
         )
         self._workers.append(self._parse_worker)
@@ -1372,14 +1435,12 @@ class YanFuMainWindow(QMainWindow):
         self._parse_worker.start()
 
     def _on_parse_then_translate(self, result: ParseResult):
-        """After parsing, start translation."""
         print(f"\n[YanFu] ✅ Parsed: {result.engine}, {result.page_count}p, {len(result.images)}img, {len(result.markdown)} chars")
         self._parsed_markdown = result.markdown
-        self.md_preview.set_markdown(result.markdown)  # Show in preview
-        self.md_editor.set_markdown("")  # Clear translation
-        
+        self.md_preview.set_markdown(result.markdown)
+        self.parse_btn.setEnabled(True)
         if not self._parsed_markdown.strip():
-            QMessageBox.warning(self, "No Text", "PDF has no extractable text. It may be fully image-based.")
+            QMessageBox.warning(self, "No Text", "No extractable text.")
             self.translate_btn.setEnabled(True)
             self.progress_bar.setVisible(False)
             return
@@ -1465,6 +1526,7 @@ class YanFuMainWindow(QMainWindow):
         self.md_editor.set_markdown(translated_md)
         self.save_md_btn.setEnabled(True)
         self.save_pdf_btn.setEnabled(True)
+        self.tl_clear_btn.setEnabled(True)
         self.translate_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status.showMessage(f"Translation completed: {output_pdf}")

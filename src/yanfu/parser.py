@@ -230,17 +230,16 @@ class PDFParser:
             raise ValueError(f"Unknown engine: {self.engine}")
 
     def _select_engine(self, pdf_path: str) -> str:
-        """Select best parsing engine based on availability.
-
-        Priority: marker > easyocr > docling > pymupdf
-        """
-        priority = ["marker", "easyocr", "docling", "pymupdf", "pdfplumber"]
+        """Select best parsing engine — NuoYi-style priority order."""
+        priority = [
+            "marker", "surya-lite", "nougat", "mineru", "docling",
+            "easyocr", "doctr", "pymupdf", "pdfplumber",
+        ]
         for eng in priority:
             available, reason = self._check_engine_available(eng)
             if available:
                 return eng
-            logger.debug(f"Engine '{eng}' skipped: {reason}")
-        return "pymupdf"
+        return "pymupdf"  # Ultimate fallback
 
     def _parse_with_pymupdf(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
         """Parse PDF using PyMuPDF."""

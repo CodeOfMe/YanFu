@@ -537,8 +537,38 @@ class _EngineModelDownloader(QThread):
                 easyocr.Reader(['en', 'ch_sim'])
                 self.signals.finished.emit("EasyOCR models ready")
 
+            elif self._engine == "doctr":
+                self.signals.progress.emit("Downloading DocTR models (~500MB)...")
+                from doctr.models import ocr_predictor
+                ocr_predictor(pretrained=True)
+                self.signals.finished.emit("DocTR models ready")
+
+            elif self._engine == "nougat":
+                self.signals.progress.emit("Downloading Nougat models (~1.5GB)...")
+                from nougat import NougatModel
+                from nougat.utils.checkpoint import get_checkpoint
+                get_checkpoint()
+                self.signals.finished.emit("Nougat models ready")
+
+            elif self._engine == "surya-lite":
+                self.signals.progress.emit("Downloading Surya Lite models (~2GB)...")
+                from surya.recognition import RecognitionPredictor
+                from surya.foundation import FoundationPredictor
+                FoundationPredictor()
+                self.signals.finished.emit("Surya Lite models ready")
+
+            elif self._engine == "mineru":
+                self.signals.progress.emit("MinerU: run magic-pdf-model-download -d")
+                self.signals.finished.emit("MinerU ready (if pre-downloaded)")
+
+            elif self._engine in ("pymupdf", "pdfplumber"):
+                self.signals.finished.emit(f"'{self._engine}' needs no download — ready.")
+
+            elif self._engine in ("llamaparse", "mathpix", "mineru-cloud", "doc2x"):
+                self.signals.error.emit(f"'{self._engine}' is cloud. Set API key env var first.")
+
             else:
-                self.signals.error.emit(f"No models needed for '{self._engine}'. Use pymupdf for instant parsing.")
+                self.signals.finished.emit(f"'{self._engine}' ready.")
         except Exception as e:
             self.signals.error.emit(str(e))
 
@@ -608,13 +638,20 @@ class SettingsDialog(QDialog):
         # Engine + device selection
         engine_select_layout = QFormLayout()
         self.engine_combo = QComboBox()
-        self.engine_combo.addItem("PyMuPDF (Fast, No Download Needed)", "pymupdf")
-        self.engine_combo.addItem("PDFPlumber (Tables)", "pdfplumber")
-        self.engine_combo.addItem("Marker (Layout + OCR, ~3GB download)", "marker")
-        self.engine_combo.addItem("Docling (IBM, ~1.5GB download)", "docling")
-        self.engine_combo.addItem("MinerU (Chinese, manual setup)", "mineru")
-        self.engine_combo.addItem("EasyOCR (80+ languages, ~300MB)", "easyocr")
         self.engine_combo.addItem("Auto (Best Available)", "auto")
+        self.engine_combo.addItem("Marker (Layout+OCR+Images, ~3GB)", "marker")
+        self.engine_combo.addItem("MinerU (Chinese, ~1.5GB)", "mineru")
+        self.engine_combo.addItem("Docling (IBM, ~1.5GB)", "docling")
+        self.engine_combo.addItem("Surya Lite (OCR, ~2GB)", "surya-lite")
+        self.engine_combo.addItem("EasyOCR (80 languages, ~300MB)", "easyocr")
+        self.engine_combo.addItem("DocTR (Light OCR, ~500MB)", "doctr")
+        self.engine_combo.addItem("Nougat (Academic, ~1.5GB)", "nougat")
+        self.engine_combo.addItem("PyMuPDF (Fast, No Models)", "pymupdf")
+        self.engine_combo.addItem("PDFPlumber (Tables, No Models)", "pdfplumber")
+        self.engine_combo.addItem("LlamaParse (Cloud, API Key)", "llamaparse")
+        self.engine_combo.addItem("Mathpix (Cloud STEM, API Key)", "mathpix")
+        self.engine_combo.addItem("MinerU Cloud (API Key)", "mineru-cloud")
+        self.engine_combo.addItem("Doc2X (Cloud LaTeX, API Key)", "doc2x")
         engine_select_layout.addRow("Engine:", self.engine_combo)
 
         self.device_combo = QComboBox()

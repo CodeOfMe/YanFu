@@ -235,8 +235,8 @@ class PDFParser:
     def _select_engine(self, pdf_path: str) -> str:
         """Select best parsing engine — NuoYi-style priority order."""
         priority = [
-            "marker", "mineru", "docling",
-            "easyocr", "doctr", "nougat", "pymupdf", "pdfplumber",
+            "docling", "marker", "easyocr", "doctr",
+            "nougat", "mineru", "pymupdf", "pdfplumber",
         ]
         for eng in priority:
             available, reason = self._check_engine_available(eng)

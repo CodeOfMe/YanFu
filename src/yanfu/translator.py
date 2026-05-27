@@ -24,7 +24,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_CONFIG = {
     "provider": "ollama",
     "base_url": "http://localhost:11434",
-    "model": "",
+    "model": "gemma3:1b",
     "api_key": "",
     "temperature": 0.3,
     "max_tokens": 4096,

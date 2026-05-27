@@ -971,7 +971,7 @@ class SettingsDialog(QDialog):
         self.margin_spin.setValue(self.config.get("margin", 20.0))
 
         # Engine
-        eng = self.config.get("parse_engine", "pymupdf")
+        eng = self.config.get("parse_engine", "docling")
         idx = self.engine_combo.findData(eng)
         if idx >= 0:
             self.engine_combo.setCurrentIndex(idx)

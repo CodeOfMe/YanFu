@@ -154,30 +154,51 @@ class ParseWorker(QThread):
 
             self.signals.progress.emit("Extracting text and images...", 0, 100)
 
-            result = parse_document(
-                self.file_path,
-                engine=self.parse_engine,
-                use_ocr=self.use_ocr,
-                output_dir=str(image_dir),
-                device=self.device,
-            )
+            # Try selected engine first, fall back to pymupdf on failure
+            engines_to_try = [self.parse_engine]
+            if self.parse_engine not in ("pymupdf", "pdfplumber"):
+                engines_to_try.append("pymupdf")
 
-            if self.is_cancelled():
-                self.signals.progress.emit("Cancelled", 100, 100)
-                return
+            last_error = None
+            for engine in engines_to_try:
+                try:
+                    result = parse_document(
+                        self.file_path,
+                        engine=engine,
+                        use_ocr=self.use_ocr,
+                        output_dir=str(image_dir),
+                        device=self.device,
+                    )
+                    # Record actual engine used
+                    result["used_engine"] = engine
+                    if engine != self.parse_engine:
+                        result["fallback"] = True
+                        logger.info(f"[ParseWorker] Fell back from '{self.parse_engine}' to 'pymupdf'")
 
-            self.signals.progress.emit("Parsing complete", 100, 100)
+                    if self.is_cancelled():
+                        self.signals.progress.emit("Cancelled", 100, 100)
+                        return
 
-            parse_result = ParseResult(
-                success=True,
-                markdown=result["markdown"],
-                images=result.get("images", {}),
-                page_count=result.get("page_count", 0),
-                engine=result.get("engine", "unknown"),
-            )
+                    self.signals.progress.emit("Parsing complete", 100, 100)
 
-            logger.debug(f"[ParseWorker] Parse complete: {parse_result.page_count} pages, {len(parse_result.images)} images")
-            self.signals.finished.emit(parse_result)
+                    parse_result = ParseResult(
+                        success=True,
+                        markdown=result["markdown"],
+                        images=result.get("images", {}),
+                        page_count=result.get("page_count", 0),
+                        engine=result.get("used_engine", result.get("engine", "unknown")),
+                    )
+
+                    logger.debug(f"[ParseWorker] Parse complete: {parse_result.page_count} pages, {len(parse_result.images)} images, engine={parse_result.engine}")
+                    self.signals.finished.emit(parse_result)
+                    return
+
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning(f"[ParseWorker] Engine '{engine}' failed: {e}")
+
+            # All engines failed
+            raise RuntimeError(f"All engines failed. Last error: {last_error}")
 
         except Exception as e:
             logger.error(f"[ParseWorker] Error: {e}")
@@ -793,6 +814,12 @@ class SettingsDialog(QDialog):
         self.page_size_combo.setCurrentText(self.config.get("page_size", "A4"))
         self.font_size_spin.setValue(self.config.get("font_size", 11))
         self.margin_spin.setValue(self.config.get("margin", 20.0))
+
+        # Engine
+        eng = self.config.get("parse_engine", "pymupdf")
+        idx = self.engine_combo.findData(eng)
+        if idx >= 0:
+            self.engine_combo.setCurrentIndex(idx)
 
         # Device
         dev = self.config.get("device", "auto")

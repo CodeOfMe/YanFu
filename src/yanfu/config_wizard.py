@@ -179,15 +179,16 @@ def run_config_wizard():
     # Step 3: PDF Parsing Engine
     print()
     print("Step 3: Choose PDF parsing engine")
-    print("  1. Auto (Best available)")
-    print("  2. Marker (Layout-aware, OCR, images - recommended)")
-    print("  3. PyMuPDF (Fast, no OCR)")
-    print("  4. PDFPlumber (Good for tables)")
+    print("  1. PyMuPDF (Fast, no download needed - recommended default)")
+    print("  2. Auto (Best available, tries marker etc.)")
+    print("  3. Marker (Layout + OCR + Images, ~3GB download)")
+    print("  4. Docling (IBM, balanced, ~1.5GB)")
+    print("  5. PDFPlumber (Tables, no download)")
     print()
 
-    engine_map = {"1": "auto", "2": "marker", "3": "pymupdf", "4": "pdfplumber"}
+    engine_map = {"1": "pymupdf", "2": "auto", "3": "marker", "4": "docling", "5": "pdfplumber"}
     while True:
-        choice = input("Select engine [1-4]: ").strip()
+        choice = input("Select engine [1-5]: ").strip()
         if choice in engine_map:
             config.set("parse_engine", engine_map[choice])
             break

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 from PySide6.QtCore import QMutex, QMutexLocker, QObject, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QFont, QImage, QPixmap, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -437,11 +437,34 @@ class ModelDownloadSignals(QObject):
     error = Signal(str)
 
 
-class ModelDownloadWorker(QThread):
-    """Background thread for downloading marker-pdf models."""
+class _TqdmSignal(tqdm):  # type: ignore
+    """Custom tqdm that emits progress to Qt signals."""
+    def __init__(self, signals, *args, **kwargs):
+        self._signals = signals
+        self._last_pct = -1
+        kwargs.setdefault("file", sys.stdout)
+        kwargs.setdefault("unit", "B")
+        kwargs.setdefault("unit_scale", True)
+        kwargs.setdefault("unit_divisor", 1024)
+        super().__init__(*args, **kwargs)
+    
+    def update(self, n=1):
+        super().update(n)
+        if self.total and self.total > 0:
+            pct = int(self.n * 100 / self.total)
+            if pct != self._last_pct:
+                self._last_pct = pct
+                desc = self.desc or "Downloading"
+                size_mb = self.total / 1024 / 1024 if self.total else 0
+                self._signals.progress.emit(f"{desc} ({size_mb:.0f}MB)...", pct, 100)
 
-    def __init__(self):
+
+class ModelDownloadWorker(QThread):
+    """Background thread for downloading parsing engine models."""
+
+    def __init__(self, engine: str = "marker"):
         super().__init__()
+        self.engine = engine
         self.signals = ModelDownloadSignals()
         self._cancel_requested = False
         self._mutex = QMutex()
@@ -456,43 +479,153 @@ class ModelDownloadWorker(QThread):
 
     def run(self):
         try:
-            import os
-            import sys
-            
-            # Suppress stderr during download
-            old_stderr = sys.stderr
-            sys.stderr = open(os.devnull, 'w')
-            
-            self.signals.progress.emit("Loading marker-pdf models...", 0, 100)
-            
-            # Import and create model dict - this triggers downloads
-            from marker.models import create_model_dict
-            
-            self.signals.progress.emit("Downloading layout model...", 10, 100)
-            from surya.layout import LayoutPredictor
-            from surya.settings import settings as surya_settings
-            
-            # Check cache
-            from pathlib import Path
-            cache_dir = Path(surya_settings.MODEL_CACHE_DIR)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            
-            self.signals.progress.emit("Initializing models...", 20, 100)
-            
-            # Create model dict - this will download if needed
-            # We'll track progress by checking file sizes
-            try:
-                artifact_dict = create_model_dict()
-                self.signals.progress.emit("Models loaded successfully", 100, 100)
-                self.signals.finished.emit("Models loaded successfully")
-            except Exception as e:
-                self.signals.error.emit(f"Model download failed: {str(e)}")
-            finally:
-                sys.stderr.close()
-                sys.stderr = old_stderr
-                
+            if self.engine == "marker":
+                self._download_marker_models()
+            elif self.engine == "docling":
+                self._download_docling_models()
+            elif self.engine == "easyocr":
+                self._download_easyocr_models()
+            elif self.engine == "mineru":
+                self._download_mineru_models()
+            else:
+                self.signals.error.emit(f"Unknown engine: {self.engine}")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.signals.error.emit(f"Download error: {str(e)}")
+
+    def _patch_tqdm(self):
+        """Enable huggingface_hub progress bars and patch tqdm to emit signals."""
+        import huggingface_hub.file_download
+        import huggingface_hub._snapshot_download
+        import tqdm as tqdm_module
+
+        signals = self.signals
+
+        # Patch huggingface_hub's tqdm to use our custom class
+        class SignalTqdm(tqdm_module.tqdm):
+            def __init__(self, *args, **kwargs):
+                kwargs.setdefault("file", sys.stdout)
+                kwargs.setdefault("unit", "B")
+                kwargs.setdefault("unit_scale", True)
+                kwargs.setdefault("unit_divisor", 1024)
+                super().__init__(*args, **kwargs)
+                self._last_pct = -1
+
+            def update(self, n=1):
+                super().update(n)
+                if self.total and self.total > 0:
+                    pct = int(self.n * 100 / self.total)
+                    if pct != self._last_pct and pct > self._last_pct:
+                        self._last_pct = pct
+                        desc = self.desc or "Downloading"
+                        signals.progress.emit(f"{desc}", pct, 100)
+
+        # Replace tqdm in huggingface_hub modules
+        huggingface_hub.file_download.tqdm = SignalTqdm
+        huggingface_hub._snapshot_download.tqdm = SignalTqdm
+
+        # Also enable progress bars
+        from huggingface_hub.utils import enable_progress_bars
+        enable_progress_bars()
+
+    def _download_marker_models(self):
+        """Download marker-pdf models with progress tracking."""
+        print("\n" + "=" * 60)
+        print("[YanFu] Downloading marker-pdf models (~3GB)...")
+        print("=" * 60)
+
+        self.signals.progress.emit("Initializing marker-pdf...", 0, 100)
+        self._patch_tqdm()
+
+        try:
+            from marker.models import create_model_dict
+
+            print("[YanFu] Loading models (downloads show below)...")
+            print("-" * 60)
+
+            artifact_dict = create_model_dict()
+
+            print("-" * 60)
+            print("[YanFu] ✅ All marker models loaded!")
+            print("=" * 60)
+
+            self.signals.progress.emit("Models loaded", 100, 100)
+            self.signals.finished.emit("Marker models loaded successfully")
+        except Exception as e:
+            print(f"\n[YanFu] ❌ Marker download failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.signals.error.emit(f"Marker download failed: {str(e)}")
+
+    def _download_docling_models(self):
+        """Download Docling models."""
+        print("\n" + "=" * 60)
+        print("[YanFu] Downloading Docling models (~1.5GB)...")
+        print("=" * 60)
+
+        self.signals.progress.emit("Loading Docling...", 10, 100)
+
+        try:
+            from docling.document_converter import DocumentConverter
+
+            self.signals.progress.emit("Loading converter...", 30, 100)
+            converter = DocumentConverter()
+
+            print("[YanFu] ✅ Docling models loaded!")
+            print("=" * 60)
+
+            self.signals.progress.emit("Docling models loaded", 100, 100)
+            self.signals.finished.emit("Docling models loaded successfully")
+        except Exception as e:
+            print(f"\n[YanFu] ❌ Docling download failed: {e}")
+            self.signals.error.emit(f"Docling download failed: {str(e)}")
+
+    def _download_easyocr_models(self):
+        """Download EasyOCR models."""
+        print("\n" + "=" * 60)
+        print("[YanFu] Downloading EasyOCR models (~300MB)...")
+        print("=" * 60)
+
+        self.signals.progress.emit("Loading EasyOCR...", 10, 100)
+
+        try:
+            import easyocr
+
+            self.signals.progress.emit("Loading reader...", 30, 100)
+            reader = easyocr.Reader(['en', 'ch_sim'])
+
+            print("[YanFu] ✅ EasyOCR models loaded!")
+            print("=" * 60)
+
+            self.signals.progress.emit("EasyOCR models loaded", 100, 100)
+            self.signals.finished.emit("EasyOCR models loaded successfully")
+        except Exception as e:
+            print(f"\n[YanFu] ❌ EasyOCR download failed: {e}")
+            self.signals.error.emit(f"EasyOCR download failed: {str(e)}")
+
+    def _download_mineru_models(self):
+        """Download MinerU models."""
+        print("\n" + "=" * 60)
+        print("[YanFu] Downloading MinerU models (~1.5GB)...")
+        print("=" * 60)
+
+        self.signals.progress.emit("Loading MinerU...", 10, 100)
+
+        try:
+            from magic_pdf.data.dataset import PymuDocDataset
+            from magic_pdf.model.doc_analyze_by_custom_model import doc_analyze
+
+            self.signals.progress.emit("Loading models...", 30, 100)
+
+            print("[YanFu] ✅ MinerU models loaded!")
+            print("=" * 60)
+
+            self.signals.progress.emit("MinerU models loaded", 100, 100)
+            self.signals.finished.emit("MinerU models loaded successfully")
+        except Exception as e:
+            print(f"\n[YanFu] ❌ MinerU download failed: {e}")
+            self.signals.error.emit(f"MinerU download failed: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
@@ -553,22 +686,49 @@ class SettingsDialog(QDialog):
 
         # PDF Parsing Engine settings
         engine_group = QGroupBox("PDF Parsing Engine")
-        engine_layout = QFormLayout()
+        engine_layout = QVBoxLayout()
 
+        # Engine list with status
+        self.engine_list = QListWidget()
+        self.engine_list.setMaximumHeight(200)
+        self._update_engine_list()
+        engine_layout.addWidget(self.engine_list)
+
+        # Engine combo for selection
+        engine_select_layout = QFormLayout()
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("Auto (Best Available)", "auto")
         self.engine_combo.addItem("Marker (Layout + OCR + Images)", "marker")
+        self.engine_combo.addItem("Docling (IBM, Balanced)", "docling")
+        self.engine_combo.addItem("MinerU (Chinese)", "mineru")
+        self.engine_combo.addItem("EasyOCR (80+ languages)", "easyocr")
+        self.engine_combo.addItem("DocTR (Lightweight OCR)", "doctr")
+        self.engine_combo.addItem("Nougat (Academic)", "nougat")
+        self.engine_combo.addItem("Surya Lite OCR", "surya-lite")
         self.engine_combo.addItem("PyMuPDF (Fast, No OCR)", "pymupdf")
         self.engine_combo.addItem("PDFPlumber (Tables)", "pdfplumber")
-        engine_layout.addRow("Engine:", self.engine_combo)
+        self.engine_combo.addItem("LlamaParse (Cloud)", "llamaparse")
+        self.engine_combo.addItem("Mathpix (Cloud, STEM)", "mathpix")
+        self.engine_combo.addItem("MinerU Cloud", "mineru-cloud")
+        self.engine_combo.addItem("Doc2X (Cloud, LaTeX)", "doc2x")
+        engine_select_layout.addRow("Selected Engine:", self.engine_combo)
+        engine_layout.addLayout(engine_select_layout)
 
-        self.engine_status_label = QLabel("Checking...")
-        engine_layout.addRow("Status:", self.engine_status_label)
+        # Download buttons for engines that need models
+        download_layout = QHBoxLayout()
+        self.download_marker_btn = QPushButton("Download Marker (~3GB)")
+        self.download_marker_btn.clicked.connect(lambda: self._download_engine_models("marker"))
+        download_layout.addWidget(self.download_marker_btn)
 
-        self.download_models_btn = QPushButton("Download Marker Models")
-        self.download_models_btn.clicked.connect(self._download_marker_models)
-        self.download_models_btn.setToolTip("Download ~2GB of marker-pdf models for layout-aware parsing")
-        engine_layout.addRow("", self.download_models_btn)
+        self.download_docling_btn = QPushButton("Download Docling (~1.5GB)")
+        self.download_docling_btn.clicked.connect(lambda: self._download_engine_models("docling"))
+        download_layout.addWidget(self.download_docling_btn)
+
+        self.download_easyocr_btn = QPushButton("Download EasyOCR (~300MB)")
+        self.download_easyocr_btn.clicked.connect(lambda: self._download_engine_models("easyocr"))
+        download_layout.addWidget(self.download_easyocr_btn)
+
+        engine_layout.addLayout(download_layout)
 
         engine_group.setLayout(engine_layout)
         layout.addWidget(engine_group)
@@ -747,80 +907,87 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, "Connection Test", f"✗ {message}")
 
+    def _update_engine_list(self):
+        """Update engine list with availability status."""
+        from .parser import PDFParser
+        
+        self.engine_list.clear()
+        engines = PDFParser.list_available_engines()
+        
+        for eng in engines:
+            if eng["name"] == "auto":
+                continue
+            
+            status = "✓" if eng["available"] else "✗"
+            gpu_tag = " [GPU]" if eng["needs_gpu"] else ""
+            item_text = f"{status} {eng['display_name']}{gpu_tag} - {eng['model_size']}"
+            
+            from PySide6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(item_text)
+            if eng["available"]:
+                item.setForeground(Qt.green)
+            else:
+                item.setForeground(Qt.red)
+            
+            self.engine_list.addItem(item)
+
     def _update_engine_status(self):
         """Update engine availability status."""
-        try:
-            from marker.models import create_model_dict
-            has_marker = True
-        except ImportError:
-            has_marker = False
+        self._update_engine_list()
 
-        try:
-            import fitz
-            has_pymupdf = True
-        except ImportError:
-            has_pymupdf = False
-
-        try:
-            import pdfplumber
-            has_pdfplumber = True
-        except ImportError:
-            has_pdfplumber = False
-
-        status_parts = []
-        if has_marker:
-            status_parts.append("✓ marker-pdf")
-        else:
-            status_parts.append("✗ marker-pdf (pip install marker-pdf)")
-        if has_pymupdf:
-            status_parts.append("✓ PyMuPDF")
-        else:
-            status_parts.append("✗ PyMuPDF")
-        if has_pdfplumber:
-            status_parts.append("✓ pdfplumber")
-        else:
-            status_parts.append("✗ pdfplumber")
-
-        self.engine_status_label.setText(", ".join(status_parts))
-
-    def _download_marker_models(self):
-        """Download marker-pdf models in background."""
+    def _download_engine_models(self, engine: str):
+        """Download models for the specified engine."""
+        engine_names = {
+            "marker": "Marker (~3GB)",
+            "docling": "Docling (~1.5GB)",
+            "easyocr": "EasyOCR (~300MB)",
+            "mineru": "MinerU (~1.5GB)",
+        }
+        name = engine_names.get(engine, engine)
+        
         reply = QMessageBox.question(
             self,
             "Download Models",
-            "Download marker-pdf models (~2GB)?\nThis enables layout-aware parsing with OCR and image extraction.",
+            f"Download {name} models?\nThis enables the {engine} parsing engine.",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
 
-        self.download_models_btn.setEnabled(False)
-        self.download_models_btn.setText("Downloading...")
+        # Disable all download buttons
+        self.download_marker_btn.setEnabled(False)
+        self.download_docling_btn.setEnabled(False)
+        self.download_easyocr_btn.setEnabled(False)
         self.model_progress_bar.setVisible(True)
         self.model_progress_bar.setValue(0)
 
-        self._model_download_worker = ModelDownloadWorker()
+        self._model_download_worker = ModelDownloadWorker(engine=engine)
         self._model_download_worker.signals.progress.connect(self._on_model_download_progress)
         self._model_download_worker.signals.finished.connect(self._on_model_download_finished)
         self._model_download_worker.signals.error.connect(self._on_model_download_error)
+        self._model_download_worker.finished.connect(self._on_model_download_worker_finished)
         self._model_download_worker.start()
 
     def _on_model_download_progress(self, message: str, current: int, total: int):
         self.model_progress_bar.setValue(current)
-        self.download_models_btn.setText(message)
+        self.model_progress_bar.setFormat(f"{message} %p%")
 
     def _on_model_download_finished(self, message: str):
-        self.download_models_btn.setEnabled(True)
-        self.download_models_btn.setText("Download Marker Models")
-        self.model_progress_bar.setVisible(False)
-        self._update_engine_status()
+        self.model_progress_bar.setValue(100)
+        self.model_progress_bar.setFormat("✓ Download complete")
+        self._update_engine_list()
         QMessageBox.information(self, "Download Complete", f"✓ {message}")
 
     def _on_model_download_error(self, error: str):
-        self.download_models_btn.setEnabled(True)
-        self.download_models_btn.setText("Download Marker Models")
         self.model_progress_bar.setVisible(False)
         QMessageBox.critical(self, "Download Error", error)
+
+    def _on_model_download_worker_finished(self):
+        """Re-enable buttons when worker finishes."""
+        self.download_marker_btn.setEnabled(True)
+        self.download_docling_btn.setEnabled(True)
+        self.download_easyocr_btn.setEnabled(True)
+        self.model_progress_bar.setVisible(False)
 
 
 # ---------------------------------------------------------------------------

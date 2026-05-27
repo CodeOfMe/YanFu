@@ -500,18 +500,37 @@ class _EngineModelDownloader(QThread):
         try:
             if self._engine == "marker":
                 if self._force:
+                    from platformdirs import user_cache_dir
                     cache = Path(user_cache_dir("datalab")) / "models"
                     if cache.exists():
                         shutil.rmtree(cache)
                         self.signals.progress.emit("Cache cleared")
-                from .model_download import ensure_marker_models
-                success, msg = ensure_marker_models(
-                    progress_callback=lambda cur, tot, m: self.signals.progress.emit(m, int(cur*100/tot), 100)
-                )
-                if success:
-                    self.signals.finished.emit(msg)
+                
+                # Let surya's built-in downloader handle everything
+                cache_dir = Path(user_cache_dir("datalab")) / "models"
+                print(f"\n[YanFu] 📁 Surya cache: {cache_dir}")
+                print(f"[YanFu] 📁 Downloading from: https://models.datalab.to")
+                self.signals.progress.emit(f"Surya cache: {cache_dir}", 0, 100)
+                self.signals.progress.emit("Downloading (check terminal for progress)...", 5, 100)
+                
+                # Enable huggingface progress bars
+                from huggingface_hub.utils import enable_progress_bars
+                enable_progress_bars()
+                
+                # This triggers surya's own downloader with tqdm progress in terminal
+                from marker.models import create_model_dict
+                create_model_dict()
+                
+                # Verify files actually exist
+                total = 0
+                if cache_dir.exists():
+                    for f in cache_dir.rglob("*.safetensors"):
+                        total += f.stat().st_size
+                if total > 0:
+                    print(f"[YanFu] ✅ Models cached: {total/1024/1024:.0f}MB at {cache_dir}")
+                    self.signals.finished.emit(f"Marker models ready ({total/1024/1024:.0f}MB)\n📁 {cache_dir}")
                 else:
-                    self.signals.error.emit(msg)
+                    self.signals.error.emit(f"No model files found in {cache_dir}. Check terminal.")
 
             elif self._engine == "docling":
                 if self._force:

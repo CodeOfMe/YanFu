@@ -5,7 +5,7 @@ using Ollama or OpenAI-compatible APIs, and generates PDF files with
 preserved layout, images, and formulas.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .api import ToolResult, yanfu_translate_file, yanfu_translate_files
 

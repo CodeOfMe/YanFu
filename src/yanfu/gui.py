@@ -1,7 +1,7 @@
-"""YanFu - PySide6 GUI with multi-threaded translation support.
+"""YanFu - PySide6 GUI with PDF viewer, translation, and synchronized scrolling.
 
 Provides a complete graphical interface for document translation
-with independent worker threads, progress tracking, and settings.
+with side-by-side PDF viewing, synchronized scrolling, and model management.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import fitz  # PyMuPDF
 from PySide6.QtCore import QMutex, QMutexLocker, QObject, Qt, QThread, Signal
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QAction, QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -27,13 +28,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QStatusBar,
     QTextEdit,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -183,6 +187,122 @@ class TranslationWorker(QThread):
 
 
 # ---------------------------------------------------------------------------
+# PDF Viewer Widget
+# ---------------------------------------------------------------------------
+
+class PDFViewerWidget(QWidget):
+    """Widget to display PDF pages with scroll synchronization."""
+
+    page_changed = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.doc = None
+        self.current_page = 0
+        self.total_pages = 0
+        self.sync_enabled = True
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        self.prev_btn = QPushButton("◀")
+        self.prev_btn.setFixedWidth(40)
+        self.prev_btn.clicked.connect(self._prev_page)
+        toolbar.addWidget(self.prev_btn)
+
+        self.page_label = QLabel("0 / 0")
+        self.page_label.setAlignment(Qt.AlignCenter)
+        toolbar.addWidget(self.page_label)
+
+        self.next_btn = QPushButton("▶")
+        self.next_btn.setFixedWidth(40)
+        self.next_btn.clicked.connect(self._next_page)
+        toolbar.addWidget(self.next_btn)
+
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        # PDF display
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAlignment(Qt.AlignCenter)
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.scroll_area.setWidget(self.image_label)
+
+        layout.addWidget(self.scroll_area)
+
+        self._update_page_label()
+
+    def load_pdf(self, file_path: str):
+        """Load a PDF file for display."""
+        self.doc = fitz.open(file_path)
+        self.total_pages = len(self.doc)
+        self.current_page = 0
+        self._render_page()
+        self._update_page_label()
+
+    def _render_page(self):
+        """Render current page."""
+        if not self.doc or self.current_page >= self.total_pages:
+            return
+
+        page = self.doc[self.current_page]
+        pix = page.get_pixmap(dpi=150)
+        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+        self.image_label.setPixmap(QPixmap.fromImage(img))
+
+    def _on_scroll(self, value):
+        """Handle scroll events for synchronization."""
+        if not self.sync_enabled or not self.doc:
+            return
+
+        scrollbar = self.scroll_area.verticalScrollBar()
+        max_scroll = scrollbar.maximum()
+        if max_scroll > 0:
+            page_ratio = value / max_scroll
+            estimated_page = int(page_ratio * (self.total_pages - 1))
+            if estimated_page != self.current_page:
+                self.current_page = estimated_page
+                self._render_page()
+                self._update_page_label()
+                self.page_changed.emit(self.current_page)
+
+    def set_page(self, page_num: int):
+        """Set current page number."""
+        if self.doc and 0 <= page_num < self.total_pages:
+            self.current_page = page_num
+            self._render_page()
+            self._update_page_label()
+
+    def _prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._render_page()
+            self._update_page_label()
+            self.page_changed.emit(self.current_page)
+
+    def _next_page(self):
+        if self.doc and self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._render_page()
+            self._update_page_label()
+            self.page_changed.emit(self.current_page)
+
+    def _update_page_label(self):
+        self.page_label.setText(f"{self.current_page + 1} / {self.total_pages}")
+
+    def set_sync_enabled(self, enabled: bool):
+        self.sync_enabled = enabled
+
+
+# ---------------------------------------------------------------------------
 # Settings dialog
 # ---------------------------------------------------------------------------
 
@@ -224,13 +344,15 @@ class SettingsDialog(QDialog):
         self.model_combo = QComboBox()
         provider_layout.addRow("Model:", self.model_combo)
 
+        btn_layout = QHBoxLayout()
         self.refresh_models_btn = QPushButton("Refresh Models")
         self.refresh_models_btn.clicked.connect(self._refresh_models)
-        provider_layout.addRow("", self.refresh_models_btn)
+        btn_layout.addWidget(self.refresh_models_btn)
 
         self.test_btn = QPushButton("Test Connection")
         self.test_btn.clicked.connect(self._test_connection)
-        provider_layout.addRow("", self.test_btn)
+        btn_layout.addWidget(self.test_btn)
+        provider_layout.addRow("", btn_layout)
 
         provider_group.setLayout(provider_layout)
         layout.addWidget(provider_group)
@@ -306,17 +428,11 @@ class SettingsDialog(QDialog):
         if provider == "ollama":
             self.base_url_edit.setEnabled(True)
             self.api_key_edit.setEnabled(False)
-            self.model_combo.clear()
-            self.model_combo.addItem("Loading models...", "")
-            self.model_combo.setEnabled(False)
             self._refresh_models()
         elif provider == "openai":
             self.base_url_edit.setEnabled(False)
             self.base_url_edit.setText("https://api.openai.com")
             self.api_key_edit.setEnabled(True)
-            self.model_combo.clear()
-            self.model_combo.addItem("Loading models...", "")
-            self.model_combo.setEnabled(False)
             self._refresh_models()
         else:
             self.base_url_edit.setEnabled(True)
@@ -325,7 +441,6 @@ class SettingsDialog(QDialog):
             self.model_combo.clear()
             self.model_combo.setEditable(True)
             self.model_combo.setEditText("")
-            self.model_combo.setEnabled(True)
 
     def _refresh_models(self):
         """Fetch and populate available models."""
@@ -386,10 +501,10 @@ class SettingsDialog(QDialog):
         self.config.set("provider", self.provider_combo.currentData())
         self.config.set("base_url", self.base_url_edit.text())
         self.config.set("api_key", self.api_key_edit.text())
-        
+
         model_data = self.model_combo.currentData()
         self.config.set("model", model_data if model_data else self.model_combo.currentText())
-        
+
         self.config.set("source_lang", self.source_lang_combo.currentData())
         self.config.set("target_lang", self.target_lang_combo.currentData())
         self.config.set("temperature", self.temperature_spin.value())
@@ -397,7 +512,7 @@ class SettingsDialog(QDialog):
         self.config.set("page_size", self.page_size_combo.currentText())
         self.config.set("font_size", self.font_size_spin.value())
         self.config.set("margin", self.margin_spin.value())
-        
+
         self.config.save_config()
 
     def _test_connection(self):
@@ -425,116 +540,110 @@ class YanFuMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"YanFu - Document Translator v{__version__}")
-        self.setMinimumSize(900, 650)
-        self.resize(1000, 700)
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 900)
 
         self._worker: TranslationWorker | None = None
         self._task_results: list[TaskResult] = []
-        self._selected_files: list[str] = []
+        self._current_pdf_path: str | None = None
+        self._current_md_path: str | None = None
+        self._current_md_content: str = ""
         self.config = ConfigManager()
 
         self._build_ui()
         self._build_menu()
-        self._update_ui_state()
+        self._build_toolbar()
 
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # Top splitter: File list + Log
-        top_splitter = QSplitter(Qt.Vertical)
+        # Main splitter: Source (left) | Translation (right)
+        main_splitter = QSplitter(Qt.Horizontal)
 
-        # File selection
-        file_group = QGroupBox("Files")
-        file_layout = QVBoxLayout(file_group)
+        # Left panel: PDF Viewer
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        file_btn_layout = QHBoxLayout()
-        self.add_files_btn = QPushButton("Add Files")
-        self.add_files_btn.clicked.connect(self._add_files)
-        file_btn_layout.addWidget(self.add_files_btn)
+        left_header = QHBoxLayout()
+        left_header.addWidget(QLabel("📄 Original Document"))
+        left_header.addStretch()
+        self.open_pdf_btn = QPushButton("Open PDF")
+        self.open_pdf_btn.clicked.connect(self._open_pdf)
+        left_header.addWidget(self.open_pdf_btn)
+        left_layout.addLayout(left_header)
 
-        self.add_dir_btn = QPushButton("Add Directory")
-        self.add_dir_btn.clicked.connect(self._add_directory)
-        file_btn_layout.addWidget(self.add_dir_btn)
+        self.pdf_viewer = PDFViewerWidget()
+        left_layout.addWidget(self.pdf_viewer)
 
-        self.remove_btn = QPushButton("Remove Selected")
-        self.remove_btn.clicked.connect(self._remove_selected)
-        file_btn_layout.addWidget(self.remove_btn)
+        main_splitter.addWidget(left_widget)
 
-        self.clear_btn = QPushButton("Clear All")
-        self.clear_btn.clicked.connect(self._clear_files)
-        file_btn_layout.addWidget(self.clear_btn)
-        file_btn_layout.addStretch()
-        file_layout.addLayout(file_btn_layout)
+        # Right panel: Translation
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
-        file_layout.addWidget(self.file_list)
+        right_header = QHBoxLayout()
+        right_header.addWidget(QLabel("🌐 Translation"))
+        right_header.addStretch()
 
-        # Output directory
-        output_layout = QHBoxLayout()
-        output_layout.addWidget(QLabel("Output:"))
-        self.output_edit = QLineEdit()
-        output_layout.addWidget(self.output_edit, 1)
-        self.browse_output_btn = QPushButton("Browse")
-        self.browse_output_btn.clicked.connect(self._browse_output)
-        output_layout.addWidget(self.browse_output_btn)
-        file_layout.addLayout(output_layout)
+        self.sync_scroll_check = QCheckBox("Sync Scroll")
+        self.sync_scroll_check.setChecked(True)
+        self.sync_scroll_check.toggled.connect(self._on_sync_scroll_toggled)
+        right_header.addWidget(self.sync_scroll_check)
 
-        top_splitter.addWidget(file_group)
+        self.translate_btn = QPushButton("▶ Translate")
+        self.translate_btn.clicked.connect(self._translate_current)
+        self.translate_btn.setEnabled(False)
+        right_header.addWidget(self.translate_btn)
 
-        # Log area
-        log_group = QGroupBox("Progress & Log")
-        log_layout = QVBoxLayout(log_group)
+        self.save_md_btn = QPushButton("💾 Save MD")
+        self.save_md_btn.clicked.connect(self._save_markdown)
+        self.save_md_btn.setEnabled(False)
+        right_header.addWidget(self.save_md_btn)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        log_layout.addWidget(self.progress_bar)
+        self.save_pdf_btn = QPushButton("💾 Save PDF")
+        self.save_pdf_btn.clicked.connect(self._save_translated_pdf)
+        self.save_pdf_btn.setEnabled(False)
+        right_header.addWidget(self.save_pdf_btn)
 
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        font = QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10)
-        self.log_text.setFont(font)
-        log_layout.addWidget(self.log_text)
+        right_layout.addLayout(right_header)
 
-        top_splitter.addWidget(log_group)
+        self.md_editor = QTextEdit()
+        self.md_editor.setReadOnly(False)
+        self.md_editor.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 11))
+        self.md_editor.setPlaceholderText("Translation will appear here...")
+        right_layout.addWidget(self.md_editor)
 
-        main_layout.addWidget(top_splitter)
+        main_splitter.addWidget(right_widget)
 
-        # Bottom buttons
-        bottom_layout = QHBoxLayout()
-        self.settings_btn = QPushButton("Settings")
-        self.settings_btn.clicked.connect(self._open_settings)
-        bottom_layout.addWidget(self.settings_btn)
-        bottom_layout.addStretch()
+        # Set initial splitter sizes (50/50)
+        main_splitter.setSizes([600, 600])
 
-        self.start_btn = QPushButton("Start Translation")
-        self.start_btn.clicked.connect(self._start_translation)
-        bottom_layout.addWidget(self.start_btn)
-
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.clicked.connect(self._cancel_translation)
-        bottom_layout.addWidget(self.cancel_btn)
-
-        main_layout.addLayout(bottom_layout)
+        main_layout.addWidget(main_splitter)
 
         # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status.showMessage("Ready")
+        self.status.showMessage("Ready - Open a PDF to start")
 
     def _build_menu(self):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("&File")
-        add_files_action = file_menu.addAction("Add Files...")
-        add_files_action.setShortcut("Ctrl+O")
-        add_files_action.triggered.connect(self._add_files)
+        open_action = file_menu.addAction("Open PDF...")
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._open_pdf)
 
-        add_dir_action = file_menu.addAction("Add Directory...")
-        add_dir_action.triggered.connect(self._add_directory)
+        file_menu.addSeparator()
+        save_md_action = file_menu.addAction("Save Markdown...")
+        save_md_action.setShortcut("Ctrl+S")
+        save_md_action.triggered.connect(self._save_markdown)
+
+        save_pdf_action = file_menu.addAction("Save Translated PDF...")
+        save_pdf_action.triggered.connect(self._save_translated_pdf)
 
         file_menu.addSeparator()
         quit_action = file_menu.addAction("Quit")
@@ -553,165 +662,192 @@ class YanFuMainWindow(QMainWindow):
         about_action = help_menu.addAction("About")
         about_action.triggered.connect(self._show_about)
 
-    def _update_ui_state(self):
-        has_files = len(self._selected_files) > 0
-        is_running = self._worker is not None and self._worker.isRunning()
+    def _build_toolbar(self):
+        toolbar = QToolBar("Main Toolbar")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
 
-        self.start_btn.setEnabled(has_files and not is_running)
-        self.cancel_btn.setVisible(is_running)
-        self.add_files_btn.setEnabled(not is_running)
-        self.add_dir_btn.setEnabled(not is_running)
-        self.remove_btn.setEnabled(has_files and not is_running)
-        self.clear_btn.setEnabled(has_files and not is_running)
-        self.settings_btn.setEnabled(not is_running)
+        open_action = QAction("📂 Open PDF", self)
+        open_action.triggered.connect(self._open_pdf)
+        toolbar.addAction(open_action)
 
-        if is_running:
-            self.status.showMessage("Translating...")
-        else:
-            self.status.showMessage(f"Ready - {len(self._selected_files)} file(s)")
+        toolbar.addSeparator()
 
-    def _add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
+        translate_action = QAction("▶ Translate", self)
+        translate_action.triggered.connect(self._translate_current)
+        toolbar.addAction(translate_action)
+
+        toolbar.addSeparator()
+
+        save_action = QAction("💾 Save", self)
+        save_menu = QMenu(self)
+        save_menu.addAction("Save Markdown", self._save_markdown)
+        save_menu.addAction("Save Translated PDF", self._save_translated_pdf)
+        save_action.setMenu(save_menu)
+        toolbar.addAction(save_action)
+
+        toolbar.addSeparator()
+
+        self.sync_action = QAction("🔗 Sync Scroll", self)
+        self.sync_action.setCheckable(True)
+        self.sync_action.setChecked(True)
+        self.sync_action.toggled.connect(self._on_sync_scroll_toggled)
+        toolbar.addAction(self.sync_action)
+
+    def _open_pdf(self):
+        """Open a PDF file."""
+        file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select PDF/CAJ Files",
+            "Open PDF",
             "",
-            "Documents (*.pdf *.caj);;PDF Files (*.pdf);;CAJ Files (*.caj);;All Files (*)",
+            "PDF Files (*.pdf);;All Files (*)",
         )
-        if files:
-            for f in files:
-                if f not in self._selected_files:
-                    self._selected_files.append(f)
-                    self.file_list.addItem(f)
-            self._update_ui_state()
+        if file_path:
+            self._load_pdf(file_path)
 
-    def _add_directory(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory")
-        if dir_path:
-            files = find_documents(dir_path, recursive=True)
-            added = 0
-            for f in files:
-                f_str = str(f)
-                if f_str not in self._selected_files:
-                    self._selected_files.append(f_str)
-                    self.file_list.addItem(f_str)
-                    added += 1
-            self._log(f"Added {added} files from directory")
-            self._update_ui_state()
+    def _load_pdf(self, file_path: str):
+        """Load and display PDF."""
+        try:
+            self.pdf_viewer.load_pdf(file_path)
+            self._current_pdf_path = file_path
+            self.translate_btn.setEnabled(True)
+            self.status.showMessage(f"Loaded: {Path(file_path).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load PDF:\n{str(e)}")
 
-    def _remove_selected(self):
-        for item in self.file_list.selectedItems():
-            row = self.file_list.row(item)
-            if 0 <= row < len(self._selected_files):
-                self._selected_files.pop(row)
-            self.file_list.takeItem(self.file_list.row(item))
-        self._update_ui_state()
-
-    def _clear_files(self):
-        self._selected_files.clear()
-        self.file_list.clear()
-        self._update_ui_state()
-
-    def _browse_output(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if dir_path:
-            self.output_edit.setText(dir_path)
-
-    def _open_settings(self):
-        dialog = SettingsDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            dialog.save_settings()
-            self.config = dialog.config
-            self._log("Settings saved")
-
-    def _start_translation(self):
-        if not self._selected_files:
-            QMessageBox.warning(self, "No Files", "Please add files to translate.")
+    def _translate_current(self):
+        """Translate the currently loaded PDF."""
+        if not self._current_pdf_path:
+            QMessageBox.warning(self, "No PDF", "Please open a PDF first.")
             return
 
         if not self.config.is_configured():
             QMessageBox.warning(self, "Not Configured", "Please configure your translation provider in Settings.")
             return
 
-        output_dir = self.output_edit.text()
-        if not output_dir:
-            output_dir = str(Path(self._selected_files[0]).parent)
-            self.output_edit.setText(output_dir)
+        output_dir = str(Path(self._current_pdf_path).parent)
+        task = TranslationTask(
+            file_path=self._current_pdf_path,
+            target_lang=self.config.get("target_lang", "en"),
+            source_lang=self.config.get("source_lang", "auto"),
+            use_ocr=self.config.get("use_ocr", False),
+            temperature=self.config.get("temperature", 0.3),
+            page_size=self.config.get("page_size", "A4"),
+            font_size=self.config.get("font_size", 11),
+            margin=self.config.get("margin", 20.0),
+            config=self.config,
+        )
 
-        tasks = []
-        for f in self._selected_files:
-            task = TranslationTask(
-                file_path=f,
-                target_lang=self.config.get("target_lang", "en"),
-                source_lang=self.config.get("source_lang", "auto"),
-                use_ocr=self.config.get("use_ocr", False),
-                temperature=self.config.get("temperature", 0.3),
-                page_size=self.config.get("page_size", "A4"),
-                font_size=self.config.get("font_size", 11),
-                margin=self.config.get("margin", 20.0),
-                config=self.config,
+        self.status.showMessage("Translating...")
+        self.translate_btn.setEnabled(False)
+
+        try:
+            processor = DocumentProcessor(
+                output_dir=output_dir,
+                target_lang=task.target_lang,
+                source_lang=task.source_lang,
+                use_ocr=task.use_ocr,
+                parse_engine=task.parse_engine,
+                temperature=task.temperature,
+                page_size=task.page_size,
+                font_size=task.font_size,
+                margin=task.margin,
+                config=task.config,
+                verbose=False,
             )
-            tasks.append(task)
 
-        self._task_results.clear()
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setMaximum(len(tasks))
-        self.progress_bar.setValue(0)
+            result = processor.process(self._current_pdf_path)
 
-        self._worker = TranslationWorker(tasks, output_dir)
-        self._worker.signals.task_started.connect(self._on_task_started)
-        self._worker.signals.task_finished.connect(self._on_task_finished)
-        self._worker.signals.all_finished.connect(self._on_all_finished)
-        self._worker.signals.progress.connect(self._on_progress)
-        self._worker.signals.error.connect(self._on_error)
-        self._worker.finished.connect(self._on_worker_finished)
-        self._worker.start()
+            if result.success:
+                self._current_md_path = result.output_md
+                self._current_md_content = result.markdown
+                self.md_editor.setPlainText(result.markdown)
+                self.save_md_btn.setEnabled(True)
+                self.save_pdf_btn.setEnabled(True)
+                self.status.showMessage(f"Translation completed: {result.output_pdf}")
+            else:
+                QMessageBox.critical(self, "Translation Error", result.error)
+                self.status.showMessage("Translation failed")
 
-        self._update_ui_state()
-        self._log(f"Starting translation of {len(tasks)} file(s)...")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Translation failed:\n{str(e)}")
+            self.status.showMessage("Translation failed")
+        finally:
+            self.translate_btn.setEnabled(True)
 
-    def _cancel_translation(self):
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._log("Cancellation requested...")
+    def _save_markdown(self):
+        """Save markdown content to file."""
+        if not self._current_md_content:
+            QMessageBox.warning(self, "No Content", "No translation to save.")
+            return
 
-    def _on_task_started(self, filename: str, current: int, total: int):
-        self.progress_bar.setValue(current - 1)
-        self._log(f"[{current}/{total}] Processing: {filename}")
+        if self._current_md_path:
+            default_path = self._current_md_path
+        else:
+            default_path = str(Path(self._current_pdf_path).parent / "translation.md") if self._current_pdf_path else "translation.md"
 
-    def _on_task_finished(self, result: TaskResult):
-        self._task_results.append(result)
-        idx = len(self._task_results)
-        self.progress_bar.setValue(idx)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Markdown",
+            default_path,
+            "Markdown Files (*.md);;All Files (*)",
+        )
+        if file_path:
+            try:
+                content = self.md_editor.toPlainText()
+                Path(file_path).write_text(content, encoding="utf-8")
+                self._current_md_path = file_path
+                self.status.showMessage(f"Saved: {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save:\n{str(e)}")
 
-    def _on_all_finished(self, results: list[TaskResult]):
-        success = sum(1 for r in results if r.success)
-        failed = len(results) - success
-        self._log(f"Translation complete: {success} succeeded, {failed} failed")
-        self.status.showMessage(f"Completed: {success}/{len(results)} succeeded")
+    def _save_translated_pdf(self):
+        """Save translated PDF."""
+        if not self._current_pdf_path:
+            return
 
-    def _on_progress(self, message: str, level: str):
-        self._log(message)
+        default_path = str(Path(self._current_pdf_path).parent / f"{Path(self._current_pdf_path).stem}_translated.pdf")
 
-    def _on_error(self, error: str):
-        self._log(f"Error: {error}")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Translated PDF",
+            default_path,
+            "PDF Files (*.pdf);;All Files (*)",
+        )
+        if file_path:
+            try:
+                # Re-render PDF with current markdown
+                content = self.md_editor.toPlainText()
+                from .renderer import render_pdf
+                render_pdf(
+                    content,
+                    output_path=file_path,
+                    page_size=self.config.get("page_size", "A4"),
+                    font_size=self.config.get("font_size", 11),
+                    margin=self.config.get("margin", 20.0),
+                )
+                self.status.showMessage(f"Saved: {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save PDF:\n{str(e)}")
 
-    def _on_worker_finished(self):
-        self._worker = None
-        self.progress_bar.setVisible(False)
-        self._update_ui_state()
+    def _on_sync_scroll_toggled(self, checked: bool):
+        """Handle sync scroll toggle."""
+        self.pdf_viewer.set_sync_enabled(checked)
+        self.sync_action.setChecked(checked)
+        self.sync_scroll_check.setChecked(checked)
 
-    def _log(self, message: str):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
-        cursor = self.log_text.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.log_text.setTextCursor(cursor)
+    def _open_settings(self):
+        dialog = SettingsDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            dialog.save_settings()
+            self.config = dialog.config
+            self.status.showMessage("Settings saved")
 
     def _run_config_wizard(self):
         from .config_wizard import run_config_wizard
         run_config_wizard()
         self.config = ConfigManager()
-        self._log("Configuration wizard completed.")
+        self.status.showMessage("Configuration wizard completed")
 
     def _show_about(self):
         QMessageBox.about(

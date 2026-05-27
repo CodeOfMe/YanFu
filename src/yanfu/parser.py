@@ -232,16 +232,15 @@ class PDFParser:
     def _select_engine(self, pdf_path: str) -> str:
         """Select best parsing engine based on availability.
 
-        Priority: pymupdf (always works) > marker > docling > pdfplumber
-        Falls back gracefully when engines are unavailable.
+        Priority: marker > easyocr > docling > pymupdf
         """
-        priority = ["pymupdf", "marker", "docling", "easyocr", "doctr", "pdfplumber"]
+        priority = ["marker", "easyocr", "docling", "pymupdf", "pdfplumber"]
         for eng in priority:
             available, reason = self._check_engine_available(eng)
             if available:
                 return eng
             logger.debug(f"Engine '{eng}' skipped: {reason}")
-        return "pymupdf"  # Ultimate fallback
+        return "pymupdf"
 
     def _parse_with_pymupdf(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
         """Parse PDF using PyMuPDF."""
@@ -484,27 +483,41 @@ class PDFParser:
 
         logger.debug(f"Parsing PDF with EasyOCR: {pdf_path}")
 
-        reader = easyocr.Reader(self.langs.split(","))
-
         import fitz
+        from PIL import Image
+        import io
+
+        langs = [l.strip() for l in self.langs.split(",") if l.strip()]
+        if not langs:
+            langs = ["en"]
+        reader = easyocr.Reader(langs)
+        logger.debug(f"EasyOCR reader loaded with languages: {langs}")
+
         doc = fitz.open(pdf_path)
         markdown_parts = []
 
         for page_idx in range(len(doc)):
             page = doc[page_idx]
-            pix = page.get_pixmap(dpi=300)
-            import numpy as np
-            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+            # Render page to image using PIL for reliable conversion
+            pix = page.get_pixmap(dpi=200)
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data)).convert("RGB")
 
-            result = reader.readtext(img, detail=0)
-            text = "\n".join(result)
-            if text:
+            try:
+                result = reader.readtext(img, detail=0)
+                text = "\n".join(result) if result else ""
+            except Exception as e:
+                logger.warning(f"  Page {page_idx + 1} OCR failed: {e}")
+                text = ""
+
+            if text.strip():
                 markdown_parts.append(text)
+            logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars")
 
         doc.close()
 
         markdown = clean_markdown("\n\n".join(markdown_parts))
-        logger.debug(f"Extracted markdown: {len(markdown)} chars")
+        logger.debug(f"EasyOCR extracted: {len(markdown)} chars from {len(markdown_parts)} pages")
 
         return {
             "markdown": markdown,

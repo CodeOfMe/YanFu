@@ -154,9 +154,9 @@ class ParseWorker(QThread):
 
             self.signals.progress.emit("Extracting text and images...", 0, 100)
 
-            # Try selected engine first, fall back to pymupdf on failure
+            # Build engine list: selected engine first, then pymupdf as last-resort fallback
             engines_to_try = [self.parse_engine]
-            if self.parse_engine not in ("pymupdf", "pdfplumber"):
+            if self.parse_engine not in ("pymupdf",):
                 engines_to_try.append("pymupdf")
 
             last_error = None
@@ -169,39 +169,40 @@ class ParseWorker(QThread):
                         output_dir=str(image_dir),
                         device=self.device,
                     )
-                    # Record actual engine used
-                    result["used_engine"] = engine
-                    if engine != self.parse_engine:
-                        result["fallback"] = True
-                        logger.info(f"[ParseWorker] Fell back from '{self.parse_engine}' to 'pymupdf'")
+
+                    markdown = result.get("markdown", "")
+                    # If user explicitly chose an engine, use its result even if text is short
+                    if engine == self.parse_engine:
+                        pass  # Always accept user's choice
+                    elif len(markdown.strip()) < 10 and engine != engines_to_try[-1]:
+                        logger.warning(f"[ParseWorker] Fallback engine '{engine}' gave too little text ({len(markdown)} chars), trying next...")
+                        continue
 
                     if self.is_cancelled():
                         self.signals.progress.emit("Cancelled", 100, 100)
                         return
 
                     self.signals.progress.emit("Parsing complete", 100, 100)
-
                     parse_result = ParseResult(
                         success=True,
-                        markdown=result["markdown"],
+                        markdown=markdown,
                         images=result.get("images", {}),
                         page_count=result.get("page_count", 0),
-                        engine=result.get("used_engine", result.get("engine", "unknown")),
+                        engine=engine,
                     )
-
-                    logger.debug(f"[ParseWorker] Parse complete: {parse_result.page_count} pages, {len(parse_result.images)} images, engine={parse_result.engine}")
+                    logger.debug(f"[ParseWorker] Done: engine={engine}, pages={parse_result.page_count}, images={len(parse_result.images)}, text={len(markdown)} chars")
                     self.signals.finished.emit(parse_result)
                     return
 
                 except Exception as e:
                     last_error = str(e)
                     logger.warning(f"[ParseWorker] Engine '{engine}' failed: {e}")
+                    continue
 
-            # All engines failed
-            raise RuntimeError(f"All engines failed. Last error: {last_error}")
+            raise RuntimeError(f"All engines failed. Last: {last_error}")
 
         except Exception as e:
-            logger.error(f"[ParseWorker] Error: {e}")
+            logger.error(f"[ParseWorker] Fatal: {e}")
             import traceback
             traceback.print_exc()
             self.signals.error.emit(str(e))
@@ -484,40 +485,60 @@ class _EngineModelDownloader(QThread):
         finished = Signal(str)
         error = Signal(str)
 
-    def __init__(self, engine: str):
+    def __init__(self, engine: str, force: bool = False):
         super().__init__()
         self._engine = engine
+        self._force = force
         self.signals = self._Signals()
 
     def run(self):
         import os
+        import shutil
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
         try:
             if self._engine == "marker":
+                if self._force:
+                    # Clear cache to force re-download
+                    from platformdirs import user_cache_dir
+                    cache = Path(user_cache_dir("datalab")) / "models"
+                    if cache.exists():
+                        shutil.rmtree(cache)
+                        self.signals.progress.emit("Cache cleared. Re-downloading...")
+
                 from marker.models import create_model_dict
                 self.signals.progress.emit("Downloading marker models (~3GB)...")
                 create_model_dict()
                 self.signals.finished.emit("Marker models ready")
 
             elif self._engine == "docling":
-                self.signals.progress.emit("Downloading Docling models (~1.5GB)...")
+                if self._force:
+                    # Clear HF cache for docling
+                    hf_cache = Path.home() / ".cache" / "huggingface"
+                    if hf_cache.exists():
+                        shutil.rmtree(hf_cache)
+                        self.signals.progress.emit("HF cache cleared. Re-downloading...")
+
+                self.signals.progress.emit("Downloading Docling models...")
                 from docling.document_converter import DocumentConverter
                 DocumentConverter()
                 self.signals.finished.emit("Docling models ready")
 
             elif self._engine == "easyocr":
+                if self._force:
+                    import easyocr
+                    easyocr_dir = Path(easyocr.__file__).parent / "model"
+                    if easyocr_dir.exists():
+                        shutil.rmtree(easyocr_dir)
+                        self.signals.progress.emit("EasyOCR cache cleared. Re-downloading...")
+
                 self.signals.progress.emit("Downloading EasyOCR models (~300MB)...")
                 import easyocr
                 easyocr.Reader(['en', 'ch_sim'])
                 self.signals.finished.emit("EasyOCR models ready")
 
-            elif self._engine == "mineru":
-                self.signals.progress.emit("MinerU: run 'magic-pdf-model-download -d' manually")
-                self.signals.error.emit("MinerU requires manual download:\nmagic-pdf-model-download -d")
-
             else:
-                self.signals.error.emit(f"Unknown engine: {self._engine}")
+                self.signals.error.emit(f"No models needed for '{self._engine}'. Use pymupdf for instant parsing.")
         except Exception as e:
             self.signals.error.emit(str(e))
 
@@ -622,6 +643,11 @@ class SettingsDialog(QDialog):
         self.download_btn = QPushButton("⬇ Download Selected Engine Models")
         self.download_btn.clicked.connect(self._download_selected_engine)
         btn_row.addWidget(self.download_btn)
+
+        self.redownload_btn = QPushButton("🔄 Re-download (Force)")
+        self.redownload_btn.clicked.connect(self._force_redownload)
+        self.redownload_btn.setToolTip("Force re-download models even if already cached")
+        btn_row.addWidget(self.redownload_btn)
         btn_row.addStretch()
         engine_layout.addLayout(btn_row)
 
@@ -752,22 +778,34 @@ class SettingsDialog(QDialog):
 
     def _download_selected_engine(self):
         """Pre-download models for the currently selected engine."""
+        self._run_download(force=False)
+
+    def _force_redownload(self):
+        """Force re-download models, clearing cache first."""
         engine = self.engine_combo.currentData()
         if engine in ("pymupdf", "pdfplumber", "auto"):
-            QMessageBox.information(self, "No Download Needed",
-                                    f"Engine '{engine}' needs no models to download.")
+            QMessageBox.information(self, "Not Needed", f"Engine '{engine}' has no models to download.")
             return
 
-        reply = QMessageBox.question(
-            self, "Download Models",
-            f"Download models for '{engine}' engine?\nModels will be cached for future use.",
+        reply = QMessageBox.warning(
+            self, "Force Re-download",
+            f"This will DELETE cached models for '{engine}' and re-download them.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
+        self._run_download(force=True)
+
+    def _run_download(self, force: bool = False):
+        engine = self.engine_combo.currentData()
+        if engine in ("pymupdf", "pdfplumber", "auto"):
+            QMessageBox.information(self, "Not Needed", f"Engine '{engine}' has no models to download.")
+            return
 
         self.download_btn.setEnabled(False)
+        self.redownload_btn.setEnabled(False)
         self.download_btn.setText("Downloading...")
-        self._dl_worker = _EngineModelDownloader(engine)
+
+        self._dl_worker = _EngineModelDownloader(engine, force=force)
         self._dl_worker.signals.progress.connect(lambda msg: self.download_btn.setText(msg))
         self._dl_worker.signals.finished.connect(self._on_engine_dl_done)
         self._dl_worker.signals.error.connect(self._on_engine_dl_error)
@@ -775,12 +813,14 @@ class SettingsDialog(QDialog):
 
     def _on_engine_dl_done(self, msg: str):
         self.download_btn.setEnabled(True)
+        self.redownload_btn.setEnabled(True)
         self.download_btn.setText("⬇ Download Selected Engine Models")
         self._update_engine_list()
         QMessageBox.information(self, "Done", msg)
 
     def _on_engine_dl_error(self, err: str):
         self.download_btn.setEnabled(True)
+        self.redownload_btn.setEnabled(True)
         self.download_btn.setText("⬇ Download Selected Engine Models")
         QMessageBox.critical(self, "Download Failed", err)
 
@@ -1043,10 +1083,6 @@ class YanFuMainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        parse_action = QAction("📄 Parse", self)
-        parse_action.triggered.connect(self._parse_current)
-        toolbar.addAction(parse_action)
-
         translate_action = QAction("▶ Translate", self)
         translate_action.triggered.connect(self._translate_current)
         toolbar.addAction(translate_action)
@@ -1162,22 +1198,95 @@ class YanFuMainWindow(QMainWindow):
         self.status.showMessage("Parse failed")
 
     def _translate_current(self):
-        """Translate the parsed markdown in background thread."""
-        if not self._parsed_markdown:
-            QMessageBox.warning(self, "Not Parsed", "Please parse the PDF first.")
+        """Translate - parses PDF first if needed, then translates."""
+        if not self._current_pdf_path:
+            QMessageBox.warning(self, "No PDF", "Please open a PDF first.")
             return
 
         if not self.config.is_configured():
             QMessageBox.warning(self, "Not Configured", "Please configure your translation provider in Settings.")
             return
 
+        if not self._parsed_markdown:
+            # Need to parse first, then translate
+            self._parse_then_translate()
+        else:
+            self._do_translate()
+
+    def _parse_then_translate(self):
+        """Parse PDF first, then automatically translate."""
         print("\n" + "=" * 60)
-        print("[YanFu] Starting translation...")
+        print("[YanFu] Parsing + Translating...")
         print(f"[YanFu] Input: {self._current_pdf_path}")
         print(f"[YanFu] Provider: {self.config.get('provider')}")
         print(f"[YanFu] Model: {self.config.get('model')}")
         print(f"[YanFu] Source: {self.config.get('source_lang', 'auto')} → Target: {self.config.get('target_lang', 'en')}")
         print("=" * 60)
+
+        output_dir = str(Path(self._current_pdf_path).parent)
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.translate_btn.setEnabled(False)
+        self.status.showMessage("Parsing PDF...")
+
+        self._parse_worker = ParseWorker(
+            file_path=self._current_pdf_path,
+            output_dir=output_dir,
+            use_ocr=self.config.get("use_ocr", False),
+            parse_engine=self.config.get("parse_engine", "pymupdf"),
+            device=self.config.get("device", "auto"),
+        )
+        self._parse_worker.signals.started.connect(lambda fp: print(f"[YanFu] Parsing: {Path(fp).name}"))
+        self._parse_worker.signals.progress.connect(lambda m, c, t: self.status.showMessage(m))
+        self._parse_worker.signals.finished.connect(self._on_parse_then_translate)
+        self._parse_worker.signals.error.connect(self._on_parse_error)
+        self._parse_worker.start()
+
+    def _on_parse_then_translate(self, result: ParseResult):
+        """After parsing, start translation."""
+        print(f"\n[YanFu] ✅ Parsed with {result.engine}: {result.page_count} pages, {len(result.images)} images, {len(result.markdown)} chars")
+        
+        self._parsed_markdown = result.markdown
+        if not self._parsed_markdown.strip():
+            QMessageBox.warning(self, "No Text", "PDF has no extractable text. It may be fully image-based.")
+            self.translate_btn.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            return
+
+        # Now translate
+        self._do_translate()
+
+    def _do_translate(self):
+        """Translate already-parsed markdown."""
+        print("\n" + "=" * 60)
+        print("[YanFu] Starting translation...")
+        print("=" * 60)
+
+        output_dir = str(Path(self._current_pdf_path).parent)
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.translate_btn.setEnabled(False)
+        self.status.showMessage("Translating...")
+
+        self._translate_worker = TranslateWorker(
+            markdown=self._parsed_markdown,
+            source_lang=self.config.get("source_lang", "auto"),
+            target_lang=self.config.get("target_lang", "en"),
+            config=self.config,
+            output_dir=output_dir,
+            file_path=self._current_pdf_path,
+            page_size=self.config.get("page_size", "A4"),
+            font_size=self.config.get("font_size", 11),
+            margin=self.config.get("margin", 20.0),
+            temperature=self.config.get("temperature", 0.3),
+        )
+        self._translate_worker.signals.started.connect(self._on_translate_started)
+        self._translate_worker.signals.progress.connect(self._on_translate_progress)
+        self._translate_worker.signals.finished.connect(self._on_translate_finished)
+        self._translate_worker.signals.error.connect(self._on_translate_error)
+        self._translate_worker.start()
 
         output_dir = str(Path(self._current_pdf_path).parent)
         

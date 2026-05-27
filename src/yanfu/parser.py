@@ -309,6 +309,11 @@ class PDFParser:
 
     def _parse_with_marker(self, pdf_path: str, output_dir: str | None) -> dict[str, Any]:
         """Parse PDF using marker-pdf."""
+        import os
+
+        # Use HF mirror for mainland China
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
         from marker.config.parser import ConfigParser
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict

@@ -25,6 +25,8 @@
 
 ## 安装
 
+YanFu 默认使用 **ModelScope / 国内 HF 镜像** 下载模型，无需科学上网。
+
 ```bash
 # 安装所有依赖（推荐）
 pip install yanfu
@@ -112,10 +114,43 @@ yanfu --test-connection
 | `-l`, `--lang` | 目标语言（默认：en） |
 | `--source-lang` | 源语言（默认：auto） |
 | `--use-ocr` | 启用扫描文档 OCR |
-| `--engine` | PDF 解析引擎（auto/pymupdf/marker/pdfplumber） |
+| `--engine` | PDF 解析引擎（auto/marker/pymupdf/docling/pdfplumber/mineru/easyocr 等） |
 | `--temperature` | 翻译温度（0.0-1.0） |
 | `--batch` | 批量处理目录 |
 | `--list-langs` | 列出支持的语言 |
+
+### 国内镜像 / ModelScope
+
+YanFu 默认使用 **国内 HF 镜像** (`https://hf-mirror.com`) 下载引擎模型，无需科学上网。只需要正常安装即可：
+
+```bash
+pip install yanfu
+```
+
+首次运行时，marker-pdf 等引擎的模型会自动从国内镜像下载到 `~/.cache/datalab/models/`。
+
+### PDF 解析引擎
+
+YanFu 支持 **14 种解析引擎**，可通过 `--engine` 参数或 GUI 设置选择：
+
+| 引擎 | 模型大小 | OCR | 特长 |
+|------|---------|-----|------|
+| **marker** | ~3GB | ✓ | 最佳综合质量，布局+OCR+图片 |
+| **docling** | ~1.5GB | ✓ | IBM，质量速度均衡 |
+| **mineru** | ~1.5GB | ✓ | 中文文档最佳 |
+| **easyocr** | ~300MB | ✓ | 80+ 语言，轻量 |
+| **doctr** | ~500MB | ✓ | 轻量 OCR |
+| **nougat** | ~1.5GB | ✓ | 学术论文 |
+| **surya-lite** | ~2GB | ✓ | Surya 纯 OCR |
+| **pymupdf** | 无 | ✗ | 最快，数字 PDF |
+| **pdfplumber** | 无 | ✗ | 表格提取，轻量 |
+| **llamaparse** | 云端 | ✓ | API Key 需配置 |
+| **mathpix** | 云端 | ✓ | 数学/STEM 公式 |
+| **mineru-cloud** | 云端 | ✓ | 中文云端 API |
+| **doc2x** | 云端 | ✓ | LaTeX 公式输出 |
+| **auto** | - | - | 自动选择最佳引擎 |
+
+在 GUI 中点击 **Settings** → 选择引擎 → 点击下载按钮即可预下载模型。
 
 ## 支持的语言
 

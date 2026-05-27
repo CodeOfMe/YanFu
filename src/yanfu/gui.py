@@ -495,11 +495,18 @@ class ModelDownloadWorker(QThread):
             self.signals.error.emit(f"Download error: {str(e)}")
 
     def _patch_tqdm(self):
-        """Enable huggingface_hub progress bars and patch tqdm to emit signals."""
+        """Enable downloading from ModelScope mirror and patch tqdm for GUI progress."""
+        import os
+        import sys
+        
         import huggingface_hub.file_download
         import huggingface_hub._snapshot_download
         import tqdm as tqdm_module
 
+        # Use ModelScope/HF mirror for mainland China
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+        
         signals = self.signals
 
         # Patch huggingface_hub's tqdm to use our custom class

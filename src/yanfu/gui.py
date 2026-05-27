@@ -437,28 +437,6 @@ class ModelDownloadSignals(QObject):
     error = Signal(str)
 
 
-class _TqdmSignal(tqdm):  # type: ignore
-    """Custom tqdm that emits progress to Qt signals."""
-    def __init__(self, signals, *args, **kwargs):
-        self._signals = signals
-        self._last_pct = -1
-        kwargs.setdefault("file", sys.stdout)
-        kwargs.setdefault("unit", "B")
-        kwargs.setdefault("unit_scale", True)
-        kwargs.setdefault("unit_divisor", 1024)
-        super().__init__(*args, **kwargs)
-    
-    def update(self, n=1):
-        super().update(n)
-        if self.total and self.total > 0:
-            pct = int(self.n * 100 / self.total)
-            if pct != self._last_pct:
-                self._last_pct = pct
-                desc = self.desc or "Downloading"
-                size_mb = self.total / 1024 / 1024 if self.total else 0
-                self._signals.progress.emit(f"{desc} ({size_mb:.0f}MB)...", pct, 100)
-
-
 class ModelDownloadWorker(QThread):
     """Background thread for downloading parsing engine models."""
 

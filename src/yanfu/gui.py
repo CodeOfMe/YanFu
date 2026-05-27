@@ -642,7 +642,6 @@ class SettingsDialog(QDialog):
         self.engine_combo.addItem("Marker (Layout+OCR+Images, ~3GB)", "marker")
         self.engine_combo.addItem("MinerU (Chinese, ~1.5GB)", "mineru")
         self.engine_combo.addItem("Docling (IBM, ~1.5GB)", "docling")
-        self.engine_combo.addItem("Surya Lite (OCR, ~2GB)", "surya-lite")
         self.engine_combo.addItem("EasyOCR (80 languages, ~300MB)", "easyocr")
         self.engine_combo.addItem("DocTR (Light OCR, ~500MB)", "doctr")
         self.engine_combo.addItem("Nougat (Academic, ~1.5GB)", "nougat")

@@ -125,9 +125,12 @@ class PDFParser:
             elif engine == "nougat":
                 from nougat import NougatModel  # noqa: F401
                 return True, "Available"
-            elif engine == "surya-lite":
-                from surya.ocr import run_ocr  # noqa: F401
+            elif engine == "nougat":
+                from nougat import NougatModel  # noqa: F401
                 return True, "Available"
+            elif engine == "surya-lite":
+                # surya is bundled with marker-pdf, use marker instead
+                return False, "Use marker engine instead (includes surya)"
             elif engine == "llamaparse":
                 from llama_parse import LlamaParse  # noqa: F401
                 if os.environ.get("LLAMA_CLOUD_API_KEY"):
@@ -232,8 +235,8 @@ class PDFParser:
     def _select_engine(self, pdf_path: str) -> str:
         """Select best parsing engine — NuoYi-style priority order."""
         priority = [
-            "marker", "surya-lite", "nougat", "mineru", "docling",
-            "easyocr", "doctr", "pymupdf", "pdfplumber",
+            "marker", "mineru", "docling",
+            "easyocr", "doctr", "nougat", "pymupdf", "pdfplumber",
         ]
         for eng in priority:
             available, reason = self._check_engine_available(eng)

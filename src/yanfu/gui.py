@@ -427,6 +427,75 @@ class PDFViewerWidget(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Model download worker
+# ---------------------------------------------------------------------------
+
+class ModelDownloadSignals(QObject):
+    """Signals for model download worker."""
+    progress = Signal(str, int, int)  # message, current, total
+    finished = Signal(str)
+    error = Signal(str)
+
+
+class ModelDownloadWorker(QThread):
+    """Background thread for downloading marker-pdf models."""
+
+    def __init__(self):
+        super().__init__()
+        self.signals = ModelDownloadSignals()
+        self._cancel_requested = False
+        self._mutex = QMutex()
+
+    def cancel(self):
+        with QMutexLocker(self._mutex):
+            self._cancel_requested = True
+
+    def is_cancelled(self) -> bool:
+        with QMutexLocker(self._mutex):
+            return self._cancel_requested
+
+    def run(self):
+        try:
+            import os
+            import sys
+            
+            # Suppress stderr during download
+            old_stderr = sys.stderr
+            sys.stderr = open(os.devnull, 'w')
+            
+            self.signals.progress.emit("Loading marker-pdf models...", 0, 100)
+            
+            # Import and create model dict - this triggers downloads
+            from marker.models import create_model_dict
+            
+            self.signals.progress.emit("Downloading layout model...", 10, 100)
+            from surya.layout import LayoutPredictor
+            from surya.settings import settings as surya_settings
+            
+            # Check cache
+            from pathlib import Path
+            cache_dir = Path(surya_settings.MODEL_CACHE_DIR)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.signals.progress.emit("Initializing models...", 20, 100)
+            
+            # Create model dict - this will download if needed
+            # We'll track progress by checking file sizes
+            try:
+                artifact_dict = create_model_dict()
+                self.signals.progress.emit("Models loaded successfully", 100, 100)
+                self.signals.finished.emit("Models loaded successfully")
+            except Exception as e:
+                self.signals.error.emit(f"Model download failed: {str(e)}")
+            finally:
+                sys.stderr.close()
+                sys.stderr = old_stderr
+                
+        except Exception as e:
+            self.signals.error.emit(f"Download error: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
 # Settings dialog
 # ---------------------------------------------------------------------------
 
@@ -437,7 +506,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(700)
         self.config = ConfigManager()
         self._build_ui()
         self._load_settings()
@@ -481,6 +551,28 @@ class SettingsDialog(QDialog):
         provider_group.setLayout(provider_layout)
         layout.addWidget(provider_group)
 
+        # PDF Parsing Engine settings
+        engine_group = QGroupBox("PDF Parsing Engine")
+        engine_layout = QFormLayout()
+
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("Auto (Best Available)", "auto")
+        self.engine_combo.addItem("Marker (Layout + OCR + Images)", "marker")
+        self.engine_combo.addItem("PyMuPDF (Fast, No OCR)", "pymupdf")
+        self.engine_combo.addItem("PDFPlumber (Tables)", "pdfplumber")
+        engine_layout.addRow("Engine:", self.engine_combo)
+
+        self.engine_status_label = QLabel("Checking...")
+        engine_layout.addRow("Status:", self.engine_status_label)
+
+        self.download_models_btn = QPushButton("Download Marker Models")
+        self.download_models_btn.clicked.connect(self._download_marker_models)
+        self.download_models_btn.setToolTip("Download ~2GB of marker-pdf models for layout-aware parsing")
+        engine_layout.addRow("", self.download_models_btn)
+
+        engine_group.setLayout(engine_layout)
+        layout.addWidget(engine_group)
+
         # Translation settings
         trans_group = QGroupBox("Translation Settings")
         trans_layout = QFormLayout()
@@ -504,9 +596,6 @@ class SettingsDialog(QDialog):
         self.temperature_spin.setSingleStep(0.1)
         self.temperature_spin.setValue(0.3)
         trans_layout.addRow("Temperature:", self.temperature_spin)
-
-        self.ocr_check = QCheckBox("Use OCR for scanned documents")
-        trans_layout.addRow("", self.ocr_check)
 
         trans_group.setLayout(trans_layout)
         layout.addWidget(trans_group)
@@ -533,6 +622,11 @@ class SettingsDialog(QDialog):
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
+        # Model download progress
+        self.model_progress_bar = QProgressBar()
+        self.model_progress_bar.setVisible(False)
+        layout.addWidget(self.model_progress_bar)
+
         # Buttons
         btn_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
@@ -545,6 +639,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
         self._on_provider_changed()
+        self._update_engine_status()
 
     def _on_provider_changed(self):
         """Update UI based on selected provider."""
@@ -616,7 +711,6 @@ class SettingsDialog(QDialog):
             self.target_lang_combo.setCurrentIndex(idx)
 
         self.temperature_spin.setValue(self.config.get("temperature", 0.3))
-        self.ocr_check.setChecked(self.config.get("use_ocr", False))
         self.page_size_combo.setCurrentText(self.config.get("page_size", "A4"))
         self.font_size_spin.setValue(self.config.get("font_size", 11))
         self.margin_spin.setValue(self.config.get("margin", 20.0))
@@ -632,7 +726,7 @@ class SettingsDialog(QDialog):
         self.config.set("source_lang", self.source_lang_combo.currentData())
         self.config.set("target_lang", self.target_lang_combo.currentData())
         self.config.set("temperature", self.temperature_spin.value())
-        self.config.set("use_ocr", self.ocr_check.isChecked())
+        self.config.set("parse_engine", self.engine_combo.currentData())
         self.config.set("page_size", self.page_size_combo.currentText())
         self.config.set("font_size", self.font_size_spin.value())
         self.config.set("margin", self.margin_spin.value())
@@ -652,6 +746,81 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Connection Test", f"✓ {message}")
         else:
             QMessageBox.warning(self, "Connection Test", f"✗ {message}")
+
+    def _update_engine_status(self):
+        """Update engine availability status."""
+        try:
+            from marker.models import create_model_dict
+            has_marker = True
+        except ImportError:
+            has_marker = False
+
+        try:
+            import fitz
+            has_pymupdf = True
+        except ImportError:
+            has_pymupdf = False
+
+        try:
+            import pdfplumber
+            has_pdfplumber = True
+        except ImportError:
+            has_pdfplumber = False
+
+        status_parts = []
+        if has_marker:
+            status_parts.append("✓ marker-pdf")
+        else:
+            status_parts.append("✗ marker-pdf (pip install marker-pdf)")
+        if has_pymupdf:
+            status_parts.append("✓ PyMuPDF")
+        else:
+            status_parts.append("✗ PyMuPDF")
+        if has_pdfplumber:
+            status_parts.append("✓ pdfplumber")
+        else:
+            status_parts.append("✗ pdfplumber")
+
+        self.engine_status_label.setText(", ".join(status_parts))
+
+    def _download_marker_models(self):
+        """Download marker-pdf models in background."""
+        reply = QMessageBox.question(
+            self,
+            "Download Models",
+            "Download marker-pdf models (~2GB)?\nThis enables layout-aware parsing with OCR and image extraction.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.download_models_btn.setEnabled(False)
+        self.download_models_btn.setText("Downloading...")
+        self.model_progress_bar.setVisible(True)
+        self.model_progress_bar.setValue(0)
+
+        self._model_download_worker = ModelDownloadWorker()
+        self._model_download_worker.signals.progress.connect(self._on_model_download_progress)
+        self._model_download_worker.signals.finished.connect(self._on_model_download_finished)
+        self._model_download_worker.signals.error.connect(self._on_model_download_error)
+        self._model_download_worker.start()
+
+    def _on_model_download_progress(self, message: str, current: int, total: int):
+        self.model_progress_bar.setValue(current)
+        self.download_models_btn.setText(message)
+
+    def _on_model_download_finished(self, message: str):
+        self.download_models_btn.setEnabled(True)
+        self.download_models_btn.setText("Download Marker Models")
+        self.model_progress_bar.setVisible(False)
+        self._update_engine_status()
+        QMessageBox.information(self, "Download Complete", f"✓ {message}")
+
+    def _on_model_download_error(self, error: str):
+        self.download_models_btn.setEnabled(True)
+        self.download_models_btn.setText("Download Marker Models")
+        self.model_progress_bar.setVisible(False)
+        QMessageBox.critical(self, "Download Error", error)
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +1058,7 @@ class YanFuMainWindow(QMainWindow):
             file_path=self._current_pdf_path,
             output_dir=output_dir,
             use_ocr=self.config.get("use_ocr", False),
-            parse_engine="auto",
+            parse_engine=self.config.get("parse_engine", "auto"),
         )
         self._parse_worker.signals.started.connect(self._on_parse_started)
         self._parse_worker.signals.progress.connect(self._on_parse_progress)

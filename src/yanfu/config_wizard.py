@@ -176,7 +176,24 @@ def run_config_wizard():
             sys.exit(1)
         config.set("model", model)
 
-    # Step 3: Test connection
+    # Step 3: PDF Parsing Engine
+    print()
+    print("Step 3: Choose PDF parsing engine")
+    print("  1. Auto (Best available)")
+    print("  2. Marker (Layout-aware, OCR, images - recommended)")
+    print("  3. PyMuPDF (Fast, no OCR)")
+    print("  4. PDFPlumber (Good for tables)")
+    print()
+
+    engine_map = {"1": "auto", "2": "marker", "3": "pymupdf", "4": "pdfplumber"}
+    while True:
+        choice = input("Select engine [1-4]: ").strip()
+        if choice in engine_map:
+            config.set("parse_engine", engine_map[choice])
+            break
+        print("Invalid choice. Please enter 1, 2, 3, or 4.")
+
+    # Step 4: Test connection
     print()
     print("Testing connection...")
     translator = OllamaTranslator(
@@ -197,7 +214,7 @@ def run_config_wizard():
             print("Configuration cancelled.")
             sys.exit(0)
 
-    # Step 4: Save configuration
+    # Step 5: Save configuration
     config.save_config()
     print()
     print("=" * 60)
@@ -207,6 +224,7 @@ def run_config_wizard():
     print(f"  Provider: {config.get('provider')}")
     print(f"  Base URL: {config.get('base_url')}")
     print(f"  Model:    {config.get('model')}")
+    print(f"  Engine:   {config.get('parse_engine', 'auto')}")
     print()
     print("You can re-run this wizard anytime with: yanfu --config")
     print()

@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Test script: Translate sample.pdf from English to Chinese."""
+"""Test script: Translate sample.pdf from English to Chinese using Ollama."""
 
 import sys
 from pathlib import Path
 
-# Add project to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from yanfu.core import DocumentProcessor
 from yanfu.translator import ConfigManager
 
 def main():
-    # Setup config for testing (use local Ollama)
+    # Setup config to use local Ollama with qwen3:0.6b
     config = ConfigManager()
     config.set("provider", "ollama")
     config.set("base_url", "http://localhost:11434")
-    config.set("model", "qwen2.5:7b")  # Good for Chinese translation
+    config.set("model", "qwen3:0.6b")
     config.set("temperature", 0.3)
     config.set("source_lang", "en")
     config.set("target_lang", "zh")
@@ -23,6 +22,7 @@ def main():
 
     print("=" * 60)
     print("YanFu Test: sample.pdf English → Chinese")
+    print("Model: qwen3:0.6b (Ollama)")
     print("=" * 60)
 
     processor = DocumentProcessor(
@@ -36,7 +36,9 @@ def main():
     result = processor.process(str(Path(__file__).parent / "sample.pdf"))
 
     if result.success:
-        print("\n✅ Translation completed successfully!")
+        print("\n" + "=" * 60)
+        print("✅ Translation completed successfully!")
+        print("=" * 60)
         print(f"  Markdown: {result.output_md}")
         print(f"  PDF:      {result.output_pdf}")
         print(f"  Pages:    {result.page_count}")

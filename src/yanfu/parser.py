@@ -91,9 +91,24 @@ class PDFParser:
         Returns:
             Parse result dictionary.
         """
+        import logging
+        import os
+        import sys
+        
         import fitz
 
-        doc = fitz.open(pdf_path)
+        logger = logging.getLogger("yanfu")
+        logger.debug(f"Parsing PDF with PyMuPDF: {pdf_path}")
+
+        # Suppress MuPDF stderr errors
+        old_stderr = sys.stderr
+        try:
+            sys.stderr = open(os.devnull, 'w')
+            doc = fitz.open(pdf_path)
+        finally:
+            sys.stderr.close()
+            sys.stderr = old_stderr
+
         markdown_parts = []
 
         for page_idx in range(len(doc)):
@@ -101,10 +116,12 @@ class PDFParser:
             text = page.get_text("markdown")
             if text:
                 markdown_parts.append(text)
+            logger.debug(f"  Page {page_idx + 1}/{len(doc)}: {len(text)} chars")
 
         doc.close()
 
         markdown = clean_markdown("\n\n".join(markdown_parts))
+        logger.debug(f"Extracted markdown: {len(markdown)} chars")
 
         # Extract images
         images = {}
@@ -113,6 +130,7 @@ class PDFParser:
             images = extract_images_from_pdf(pdf_path, str(image_dir))
             if images:
                 markdown = save_images_and_update_markdown(markdown, images, output_dir)
+            logger.debug(f"Extracted {len(images)} images")
 
         return {
             "markdown": markdown,

@@ -180,8 +180,13 @@ class OllamaTranslator:
         Returns:
             Translated text.
         """
+        import logging
+        logger = logging.getLogger("yanfu")
+        
         if not text.strip():
             return ""
+
+        logger.debug(f"Translating {len(text)} chars ({source_lang} → {target_lang})")
 
         source_name = LANGUAGE_MAP.get(source_lang, source_lang)
         target_name = LANGUAGE_MAP.get(target_lang, target_lang)
@@ -210,7 +215,12 @@ class OllamaTranslator:
         Returns:
             Generated text.
         """
+        import logging
+        logger = logging.getLogger("yanfu")
+        
         url = f"{self.base_url}/api/generate"
+        logger.debug(f"Calling Ollama: {url} (model: {self.model})")
+        
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -224,7 +234,9 @@ class OllamaTranslator:
         response = requests.post(url, json=payload, timeout=120)
         response.raise_for_status()
         result = response.json()
-        return result.get("response", "")
+        translated = result.get("response", "")
+        logger.debug(f"Ollama response: {len(translated)} chars")
+        return translated
 
     def _call_openai_compatible(self, prompt: str) -> str:
         """Call OpenAI-compatible API.

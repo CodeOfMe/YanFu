@@ -242,9 +242,25 @@ class PDFViewerWidget(QWidget):
 
     def load_pdf(self, file_path: str):
         """Load a PDF file for display."""
-        self.doc = fitz.open(file_path)
+        import logging
+        logger = logging.getLogger("yanfu")
+        
+        logger.debug(f"Opening PDF: {file_path}")
+        
+        # Suppress MuPDF errors by redirecting stderr temporarily
+        import os
+        import sys
+        old_stderr = sys.stderr
+        try:
+            sys.stderr = open(os.devnull, 'w')
+            self.doc = fitz.open(file_path)
+        finally:
+            sys.stderr.close()
+            sys.stderr = old_stderr
+            
         self.total_pages = len(self.doc)
         self.current_page = 0
+        logger.debug(f"PDF opened: {self.total_pages} pages")
         self._render_page()
         self._update_page_label()
 
@@ -708,11 +724,17 @@ class YanFuMainWindow(QMainWindow):
     def _load_pdf(self, file_path: str):
         """Load and display PDF."""
         try:
+            print(f"\n[YanFu] Loading PDF: {file_path}")
             self.pdf_viewer.load_pdf(file_path)
             self._current_pdf_path = file_path
             self.translate_btn.setEnabled(True)
-            self.status.showMessage(f"Loaded: {Path(file_path).name}")
+            pages = self.pdf_viewer.total_pages
+            print(f"[YanFu] PDF loaded successfully: {pages} pages")
+            self.status.showMessage(f"Loaded: {Path(file_path).name} ({pages} pages)")
         except Exception as e:
+            print(f"[YanFu] ERROR loading PDF: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to load PDF:\n{str(e)}")
 
     def _translate_current(self):
@@ -724,6 +746,14 @@ class YanFuMainWindow(QMainWindow):
         if not self.config.is_configured():
             QMessageBox.warning(self, "Not Configured", "Please configure your translation provider in Settings.")
             return
+
+        print("\n" + "=" * 60)
+        print("[YanFu] Starting translation...")
+        print(f"[YanFu] Input: {self._current_pdf_path}")
+        print(f"[YanFu] Provider: {self.config.get('provider')}")
+        print(f"[YanFu] Model: {self.config.get('model')}")
+        print(f"[YanFu] Source: {self.config.get('source_lang', 'auto')} → Target: {self.config.get('target_lang', 'en')}")
+        print("=" * 60)
 
         output_dir = str(Path(self._current_pdf_path).parent)
         task = TranslationTask(
@@ -742,6 +772,7 @@ class YanFuMainWindow(QMainWindow):
         self.translate_btn.setEnabled(False)
 
         try:
+            print(f"\n[YanFu] Creating DocumentProcessor...")
             processor = DocumentProcessor(
                 output_dir=output_dir,
                 target_lang=task.target_lang,
@@ -753,9 +784,10 @@ class YanFuMainWindow(QMainWindow):
                 font_size=task.font_size,
                 margin=task.margin,
                 config=task.config,
-                verbose=False,
+                verbose=True,  # Enable verbose logging to terminal
             )
 
+            print(f"[YanFu] Processing document...")
             result = processor.process(self._current_pdf_path)
 
             if result.success:
@@ -764,16 +796,26 @@ class YanFuMainWindow(QMainWindow):
                 self.md_editor.setPlainText(result.markdown)
                 self.save_md_btn.setEnabled(True)
                 self.save_pdf_btn.setEnabled(True)
+                print(f"\n[YanFu] ✅ Translation completed successfully!")
+                print(f"[YanFu] Markdown: {result.output_md}")
+                print(f"[YanFu] PDF: {result.output_pdf}")
+                print(f"[YanFu] Pages: {result.page_count}")
+                print(f"[YanFu] Time: {result.total_time:.1f}s")
                 self.status.showMessage(f"Translation completed: {result.output_pdf}")
             else:
+                print(f"\n[YanFu] ❌ Translation failed: {result.error}")
                 QMessageBox.critical(self, "Translation Error", result.error)
                 self.status.showMessage("Translation failed")
 
         except Exception as e:
+            print(f"\n[YanFu] ❌ ERROR during translation: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Translation failed:\n{str(e)}")
             self.status.showMessage("Translation failed")
         finally:
             self.translate_btn.setEnabled(True)
+            print("=" * 60)
 
     def _save_markdown(self):
         """Save markdown content to file."""
@@ -867,13 +909,51 @@ class YanFuMainWindow(QMainWindow):
 
 def run_gui():
     """Launch the YanFu GUI application."""
+    import logging
+    import os
+    import sys
+
+    # Set up detailed logging to terminal
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%H:%M:%S',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    logger = logging.getLogger("yanfu")
+    logger.setLevel(logging.DEBUG)
+
+    # Suppress MuPDF stderr errors
+    try:
+        devnull = open(os.devnull, 'w')
+        sys.stderr = devnull
+    except Exception:
+        pass
+
+    print("=" * 60)
+    print("  YanFu - Document Translator v" + __version__)
+    print("=" * 60)
+    print()
+    print("[YanFu] Starting GUI...")
+    print(f"[YanFu] Python: {sys.version}")
+    print(f"[YanFu] Platform: {sys.platform}")
+    print()
+
     app = QApplication(sys.argv)
     app.setApplicationName("YanFu")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("CodeOfMe")
     app.setStyle("Fusion")
 
+    print("[YanFu] QApplication initialized")
+
     window = YanFuMainWindow()
     window.show()
+
+    print("[YanFu] Main window shown")
+    print("[YanFu] GUI ready. Open a PDF to start translation.")
+    print()
 
     sys.exit(app.exec())

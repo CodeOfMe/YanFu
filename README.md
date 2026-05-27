@@ -50,6 +50,19 @@ That's it! No additional setup needed. Models will auto-download on first run.
 
 ## Quick Start / 快速开始
 
+### GUI Application / 图形界面
+
+```bash
+# Launch GUI
+yanfu --gui
+
+# Or with PySide6 installed
+pip install yanfu[gui]
+yanfu --gui
+```
+
+### CLI / 命令行
+
 ```bash
 # Translate a PDF to English (model downloads automatically on first run)
 yanfu paper.pdf
@@ -121,6 +134,35 @@ Models are stored in `~/.cache/yanfu/models/` after download.
 | pt | Portuguese | ar | Arabic |
 | hi | Hindi | th | Thai |
 | vi | Vietnamese | | |
+
+## Standalone Installer / 独立安装包
+
+### Windows MSI
+
+Download the MSI installer for a complete offline experience:
+
+```bash
+# Build MSI with bundled model
+./scripts/build_msi.sh
+
+# Or on Windows
+scripts\build_msi.bat gemma3:1b
+```
+
+The MSI installer includes:
+- All dependencies
+- PySide6 GUI
+- Pre-downloaded GGUF model (~780MB)
+- No internet required after installation
+
+### macOS DMG / Linux AppImage
+
+```bash
+briefcase create macOS dmg && briefcase build macOS dmg && briefcase package macOS dmg
+briefcase create linux appimage && briefcase build linux appimage && briefcase package linux appimage
+```
+
+See [PACKAGING.md](PACKAGING.md) for detailed instructions.
 
 ## Python API
 

@@ -7,12 +7,12 @@ with independent worker threads, progress tracking, and settings.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMutex, QMutexLocker, QSettings, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QMutex, QMutexLocker, QObject, QSettings, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -38,10 +39,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .core import DocumentProcessor, ProcessingResult
-from .translator import MODEL_DEFINITIONS, ModelManager
-from .utils import find_documents
-
+from .core import DocumentProcessor
+from .translator import BUNDLED_MODELS_DIR, MODEL_DEFINITIONS, ModelManager
+from .utils import LANGUAGE_MAP, find_documents
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -81,24 +81,10 @@ class TaskResult:
 
 
 # ---------------------------------------------------------------------------
-# Worker thread
+# Worker signals and thread
 # ---------------------------------------------------------------------------
 
-class TranslationWorkerSignals(QObject):
-    """Signals for translation worker."""
-    from PySide6.QtCore import Signal, QObject
-
-    progress = Signal(str, str)
-    task_started = Signal(str, int, int)
-    task_finished = Signal(object)
-    all_finished = Signal(list)
-    error = Signal(str)
-
-
-from PySide6.QtCore import QObject, Signal  # noqa: E402
-
-
-class TranslationWorkerSignals(QObject):
+class WorkerSignals(QObject):
     """Signals for translation worker."""
     progress = Signal(str, str)
     task_started = Signal(str, int, int)
@@ -110,8 +96,6 @@ class TranslationWorkerSignals(QObject):
 class TranslationWorker(QThread):
     """Independent thread for running translation tasks."""
 
-    from PySide6.QtCore import QThread
-
     def __init__(
         self,
         tasks: list[TranslationTask],
@@ -122,7 +106,7 @@ class TranslationWorker(QThread):
         self.output_dir = output_dir
         self._cancel_requested = False
         self._mutex = QMutex()
-        self.signals = TranslationWorkerSignals()
+        self.signals = WorkerSignals()
 
     def cancel(self):
         """Request cancellation."""
@@ -161,7 +145,7 @@ class TranslationWorker(QThread):
                     font_name=task.font_name,
                     font_size=task.font_size,
                     margin=task.margin,
-                    cache_dir=task.cache_dir,
+                    cache_dir=str(BUNDLED_MODELS_DIR) if BUNDLED_MODELS_DIR.exists() else task.cache_dir,
                     verbose=False,
                 )
 
@@ -200,9 +184,6 @@ class TranslationWorker(QThread):
                 self.signals.progress.emit(f"Error: {filename}: {str(e)}", "error")
 
         self.signals.all_finished.emit(results)
-
-
-from PySide6.QtCore import QThread  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

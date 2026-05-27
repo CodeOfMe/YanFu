@@ -41,6 +41,43 @@ MODEL_DEFINITIONS = {
 # Default model cache directory
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "yanfu" / "models"
 
+# Bundled models directory (for MSI/DMG packaging)
+# Models bundled in the installer are stored here
+def get_bundled_models_dir() -> Path:
+    """Get the directory for bundled models.
+
+    Checks multiple locations for bundled models:
+    1. Relative to the package (for development)
+    2. Relative to the executable (for installed apps)
+    3. Environment variable YANFU_MODEL_DIR
+    """
+    # Check environment variable first
+    env_dir = os.environ.get("YANFU_MODEL_DIR")
+    if env_dir:
+        return Path(env_dir)
+
+    # Check relative to package (development)
+    package_dir = Path(__file__).parent.parent.parent.parent / "models"
+    if package_dir.exists():
+        return package_dir
+
+    # Check relative to executable (installed app)
+    try:
+        import sys
+        if getattr(sys, "frozen", False):
+            # Running as compiled executable
+            exe_dir = Path(sys.executable).parent
+            bundled_dir = exe_dir / "models"
+            if bundled_dir.exists():
+                return bundled_dir
+    except Exception:
+        pass
+
+    return package_dir
+
+
+BUNDLED_MODELS_DIR = get_bundled_models_dir()
+
 
 class ModelManager:
     """Manage GGUF model downloads and caching.
@@ -60,31 +97,41 @@ class ModelManager:
     def get_model_path(self, model_name: str) -> Path | None:
         """Get the local path for a model.
 
+        Checks bundled models first, then cache directory.
+
         Args:
             model_name: Model identifier.
 
         Returns:
-            Path to GGUF file or None if not downloaded.
+            Path to GGUF file or None if not found.
         """
         model_def = MODEL_DEFINITIONS.get(model_name)
         if not model_def:
             return None
 
         gguf_file = model_def["gguf_file"]
-        model_path = self.cache_dir / model_name / gguf_file
 
+        # Check bundled models first (for MSI/DMG installs)
+        if BUNDLED_MODELS_DIR.exists():
+            bundled_path = BUNDLED_MODELS_DIR / model_name / gguf_file
+            if bundled_path.exists():
+                return bundled_path
+
+        # Check cache directory
+        model_path = self.cache_dir / model_name / gguf_file
         if model_path.exists():
             return model_path
+
         return None
 
     def is_model_downloaded(self, model_name: str) -> bool:
-        """Check if a model is already downloaded.
+        """Check if a model is available (bundled or cached).
 
         Args:
             model_name: Model identifier.
 
         Returns:
-            True if model exists locally.
+            True if model exists locally (bundled or cached).
         """
         return self.get_model_path(model_name) is not None
 

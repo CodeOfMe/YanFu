@@ -23,6 +23,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  yanfu --gui                                # Launch graphical interface
   yanfu paper.pdf                              # Translate to English (default)
   yanfu paper.pdf -l zh                        # Translate to Chinese
   yanfu paper.pdf -l ja --model qwen3:0.6b     # Translate to Japanese with Qwen
@@ -30,6 +31,7 @@ Examples:
   yanfu ./papers --batch -l es                 # Batch translate directory
   yanfu paper.pdf -o ./output -l de -v         # Verbose output
   yanfu paper.pdf --json                       # JSON output
+  yanfu paper.pdf --use-ollama                 # Use Ollama instead of ModelScope
 
 Translation Models (auto-downloaded on first use):
   gemma3:1b    Google Gemma 3 1B (default, ~780MB)
@@ -185,6 +187,11 @@ Zero-Configuration:
         action="store_true",
         help="Remove all downloaded models",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Launch graphical user interface",
+    )
 
     args = parser.parse_args()
 
@@ -238,6 +245,11 @@ Zero-Configuration:
         mm = ModelManager(args.cache_dir)
         mm.cleanup()
         print("All models removed.")
+        sys.exit(0)
+
+    if args.gui:
+        from .gui import run_gui
+        run_gui()
         sys.exit(0)
 
     # Validate input

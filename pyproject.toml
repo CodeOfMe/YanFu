@@ -115,3 +115,56 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
+
+# ---------------------------------------------------------------------------
+# Briefcase configuration for MSI/DMG/AppImage packaging
+# ---------------------------------------------------------------------------
+
+[tool.briefcase]
+project_name = "YanFu"
+bundle = "org.codeofme"
+version = "0.1.0"
+url = "https://github.com/CodeOfMe/YanFu"
+license = "GPL-3.0"
+author = "CodeOfMe"
+author_email = "wedonotuse@outlook.com"
+
+[tool.briefcase.app.yanfu]
+formal_name = "YanFu"
+description = "PDF/CAJ Document Translator with Local LLMs"
+long_description = """Translate PDF and CAJ documents using local GGUF models.
+Zero-configuration: Models are bundled in the installer.
+No internet connection required after installation."""
+icon = "src/yanfu/resources/icons/yanfu"
+sources = ["src/yanfu"]
+requires = [
+    "PySide6>=6.5.0",
+    "PyMuPDF>=1.23.0",
+    "Pillow>=9.0.0",
+    "pdfplumber>=0.10.0",
+    "python-docx>=0.8.11",
+    "reportlab>=4.0.0",
+    "markdown>=3.4.0",
+    "llama-cpp-python>=0.3.0",
+    "modelscope>=1.14.0",
+    "huggingface-hub>=0.20.0",
+    "requests>=2.28.0",
+    "tqdm>=4.65.0",
+]
+
+# Bundle models in the installer
+[tool.briefcase.app.yanfu.windows]
+bundles_models = true
+model_dir = "models"
+installer_type = "msi"
+output_format = "msi"
+
+[tool.briefcase.app.yanfu.macOS]
+bundles_models = true
+model_dir = "models"
+output_format = "dmg"
+
+[tool.briefcase.app.yanfu.linux]
+bundles_models = true
+model_dir = "models"
+output_format = "appimage"

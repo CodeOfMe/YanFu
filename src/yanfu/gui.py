@@ -603,6 +603,7 @@ class SettingsDialog(QDialog):
         self.setMinimumHeight(700)
         self.config = ConfigManager()
         self._model_fetch_worker = None
+        self._dl_worker: _EngineModelDownloader | None = None
         self._build_ui()
         self._load_settings()
 
@@ -997,8 +998,12 @@ class YanFuMainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
 
+        # Keep strong references to all threads
         self._parse_worker: ParseWorker | None = None
         self._translate_worker: TranslateWorker | None = None
+        self._dl_worker: _EngineModelDownloader | None = None
+        self._fetch_worker: _ModelFetchWorker | None = None
+        
         self._current_pdf_path: str | None = None
         self._current_md_path: str | None = None
         self._current_md_content: str = ""

@@ -53,6 +53,7 @@ dependencies = [
     "surya-ocr>=0.6.0",        # Surya OCR backend for marker
     "docling>=2.0.0",          # IBM Docling (balanced quality/speed)
     "easyocr>=1.7.0",          # 80+ language OCR
+    "numpy>=1.24.0",           # Array operations
     "doctr>=0.9.0",            # DocTR lightweight OCR
     "nougat-ocr>=0.1.0",       # Academic paper OCR
     # GPU acceleration (optional backends auto-detected)

@@ -486,6 +486,7 @@ class PDFParser:
         import fitz
         from PIL import Image
         import io
+        import numpy as np
 
         # Map language codes to easyocr format
         lang_map = {
@@ -503,13 +504,14 @@ class PDFParser:
 
         for page_idx in range(len(doc)):
             page = doc[page_idx]
-            # Render page to image using PIL for reliable conversion
+            # Render page to PIL, convert to numpy array for easyocr
             pix = page.get_pixmap(dpi=200)
             img_data = pix.tobytes("png")
             img = Image.open(io.BytesIO(img_data)).convert("RGB")
+            img_np = np.array(img)
 
             try:
-                result = reader.readtext(img, detail=0)
+                result = reader.readtext(img_np, detail=0)
                 text = "\n".join(result) if result else ""
             except Exception as e:
                 logger.warning(f"  Page {page_idx + 1} OCR failed: {e}")

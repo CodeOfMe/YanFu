@@ -59,7 +59,7 @@ def main():
     config = ConfigManager()
     config.set("provider", "ollama")
     config.set("base_url", "http://localhost:11434")
-    config.set("model", "qwen3:0.6b")
+    config.set("model", "qwen3.5:0.8b")
     config.set("target_lang", "zh")
     config.set("source_lang", "en")
     config.set("temperature", 0.3)

@@ -400,6 +400,8 @@ class PDFViewerWidget(QWidget):
         self.current_page = 0
         self.total_pages = 0
         self.sync_enabled = True
+        self.zoom_factor = 1.0
+        self._current_pixmap = None
         self._build_ui()
 
     def _build_ui(self):
@@ -462,9 +464,12 @@ class PDFViewerWidget(QWidget):
             return
 
         page = self.doc[self.current_page]
-        pix = page.get_pixmap(dpi=150)
-        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+        dpi = int(150 * self.zoom_factor)
+        pix = page.get_pixmap(dpi=dpi)
+        self._current_pixmap = pix
+        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
         self.image_label.setPixmap(QPixmap.fromImage(img))
+        self.page_label.setText(f"{self.current_page + 1} / {self.total_pages}  ({self.zoom_factor:.1f}x)")
 
     def _on_scroll(self, value):
         """Handle scroll events for synchronization."""
@@ -508,6 +513,13 @@ class PDFViewerWidget(QWidget):
 
     def set_sync_enabled(self, enabled: bool):
         self.sync_enabled = enabled
+
+    def _set_zoom(self, factor: float):
+        self.zoom_factor = max(0.3, min(4.0, factor))
+        self._render_page()
+
+    def _zoom(self, delta: float):
+        self._set_zoom(self.zoom_factor + delta)
 
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1082,10 @@ class YanFuMainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
+        self._build_shortcuts()
+
+        # Enable drag-and-drop
+        self.setAcceptDrops(True)
 
     def _build_ui(self):
         central = QWidget()
@@ -1234,6 +1250,28 @@ class YanFuMainWindow(QMainWindow):
         self.sync_action.setChecked(True)
         self.sync_action.toggled.connect(self._on_sync_scroll_toggled)
         toolbar.addAction(self.sync_action)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.toLocalFile().lower().endswith(('.pdf', '.caj')):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith(('.pdf', '.caj')):
+                self._load_pdf(path)
+                break
+
+    def _cancel(self):
+        if self._parse_worker and self._parse_worker.isRunning():
+            self._parse_worker.cancel()
+        if self._translate_worker and self._translate_worker.isRunning():
+            self._translate_worker.cancel()
+        self.status.showMessage("Cancelled")
 
     def _toggle_view(self, which: str):
         """Toggle between rendered HTML and plain text."""
@@ -1646,12 +1684,10 @@ def run_gui():
     )
     logger.setLevel(logging.DEBUG)
 
-    # Suppress MuPDF stderr errors
-    try:
-        devnull = open(os.devnull, 'w')
-        sys.stderr = devnull
-    except Exception:
-        pass
+    # Suppress MuPDF stderr errors only during fitz.open
+    import contextlib
+    with contextlib.redirect_stderr(open(os.devnull, 'w')):
+        self.doc = fitz.open(file_path)
 
     print("=" * 60)
     print("  YanFu - Document Translator v" + __version__)

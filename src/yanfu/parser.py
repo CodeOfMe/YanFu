@@ -125,9 +125,6 @@ class PDFParser:
             elif engine == "nougat":
                 from nougat import NougatModel  # noqa: F401
                 return True, "Available"
-            elif engine == "nougat":
-                from nougat import NougatModel  # noqa: F401
-                return True, "Available"
             elif engine == "surya-lite":
                 # surya is bundled with marker-pdf, use marker instead
                 return False, "Use marker engine instead (includes surya)"
@@ -362,6 +359,7 @@ class PDFParser:
         print("[YanFu] (First run downloads ~3 GB of model weights)")
         artifact_dict = create_model_dict(device=dev)
 
+        config_parser = ConfigParser()
         converter = PdfConverter(
             config=config_parser.generate_config_dict(),
             artifact_dict=artifact_dict,
@@ -572,25 +570,29 @@ class PDFParser:
         logger.debug(f"Parsing PDF with Nougat: {pdf_path}")
 
         import fitz
+        from functools import partial
         doc = fitz.open(pdf_path)
-        markdown_parts = []
+        try:
+            markdown_parts = []
 
-        model = NougatModel.from_pretrained("facebook/nougat-base")
-        model = move_to_device(model)
-        model.eval()
+            model = NougatModel.from_pretrained("facebook/nougat-base")
+            model = move_to_device(model)
+            model.eval()
 
-        for page_idx in range(len(doc)):
-            page = doc[page_idx]
-            pix = page.get_pixmap(dpi=96)
-            import numpy as np
-            from PIL import Image
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            for page_idx in range(len(doc)):
+                page = doc[page_idx]
+                pix = page.get_pixmap(dpi=96)
+                import numpy as np
+                from PIL import Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            dataset = ImageDataset([img], partial=model.hparams.partial)
-            model_output = model.inference(image_tensors=dataset, early_stopping=False)
-            prediction = markdown_compatible(model_output["predictions"][0])
-            if prediction:
-                markdown_parts.append(prediction)
+                dataset = ImageDataset([img], partial=model.hparams.partial)
+                model_output = model.inference(image_tensors=dataset, early_stopping=False)
+                prediction = markdown_compatible(model_output["predictions"][0])
+                if prediction:
+                    markdown_parts.append(prediction)
+        finally:
+            doc.close()
 
         doc.close()
 
